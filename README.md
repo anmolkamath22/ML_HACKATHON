@@ -29,18 +29,22 @@ Both input paths call the same input service and persist a PNG original. The fro
 
 ## Requirements and setup
 
-Python 3.10+, Node 20+, npm. From the repository root on Linux/macOS:
+Python 3.10+, Node 20+, npm. Setup scripts are platform-specific so each shell uses its native virtual environment and executable paths.
+
+### Linux / macOS
 
 ```bash
 ./scripts/setup_linux.sh
 ./scripts/run_all.sh
 ```
 
-Setup creates `backend/.venv`, installs pinned backend packages and frontend packages, and copies `.env.example` only if `.env` does not exist. For separate terminals, run `./scripts/run_backend.sh` and `./scripts/run_frontend.sh`. API docs: http://127.0.0.1:8000/docs. Frontend: http://127.0.0.1:5173.
+Setup creates `backend/.venv`, installs pinned backend packages and frontend packages, and copies `.env.example` only if `.env` does not exist. For separate terminals, run `./scripts/run_backend.sh` and `./scripts/run_frontend.sh`. To open both, use `./scripts/run_all.sh`.
 
 ### Windows PowerShell
 
-Run `scripts\setup_windows.cmd` once, then run `scripts\run_backend.cmd` and `scripts\run_frontend.cmd` in separate PowerShell terminals. Open http://127.0.0.1:5173. The `.sh` scripts are for Linux/macOS or Git Bash; PowerShell does not execute them as shell scripts.
+From PowerShell at the repository root, run `scripts\setup_windows.cmd` once. Then run `scripts\run_backend.cmd` and `scripts\run_frontend.cmd` in separate terminals, or use `scripts\run_all.cmd` to open both. Open http://127.0.0.1:5173; API docs are at http://127.0.0.1:8000/docs. The `.sh` scripts are for Linux/macOS (or WSL); PowerShell does not execute them as shell scripts.
+
+The setup command's `Requirement already satisfied` lines are normal pip output. If npm reports that `esbuild.exe` is an invalid application, npm did not finish installing the frontend. The Windows setup script uses a project-local npm cache and prints a targeted hint for this case. Python virtualenv activation is optional; if desired in PowerShell, use `. .\backend\.venv\Scripts\Activate.ps1` (dot, space, then script path). The run scripts use the virtualenv directly, so activation is not required.
 
 ## API summary
 
