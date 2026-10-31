@@ -1,5 +1,5 @@
-import { Excalidraw, exportToBlob, exportToJson } from '@excalidraw/excalidraw'
-import type { ExcalidrawImperativeAPI } from '@excalidraw/excalidraw/types/types'
+import { Excalidraw, exportToBlob, serializeAsJSON } from '@excalidraw/excalidraw'
+import type { ExcalidrawImperativeAPI } from '@excalidraw/excalidraw/types'
 import { useRef, useState } from 'react'
 import { Download, Eraser, Sparkles } from 'lucide-react'
 import { submitFile } from '../services/api'
@@ -15,8 +15,8 @@ export function ExcalidrawEditor({ onCreated, busy, setBusy }: Props) {
     setError(''); setBusy(true)
     try {
       const files = api.getFiles(); const blob = await exportToBlob({ elements, appState: { ...api.getAppState(), exportBackground: true }, files, mimeType: 'image/png', quality: 1 })
-      const scene = await exportToJson({ elements, appState: api.getAppState(), files })
-      const file = new File([blob], 'sketch.png', { type: 'image/png' }); onCreated(await submitFile(file, true, JSON.stringify(scene)))
+      const scene = serializeAsJSON(elements, api.getAppState(), files, 'local')
+      const file = new File([blob], 'sketch.png', { type: 'image/png' }); onCreated(await submitFile(file, true, scene))
     } catch { setError('Could not export this drawing. Try again.') } finally { setBusy(false) }
   }
   const clear = () => { apiRef.current?.resetScene(); setError('') }
@@ -25,5 +25,5 @@ export function ExcalidrawEditor({ onCreated, busy, setBusy }: Props) {
     const elements = api.getSceneElements().filter(element => !element.isDeleted); if (!elements.length) { setError('The canvas is empty.'); return }
     const blob = await exportToBlob({ elements, appState: api.getAppState(), files: api.getFiles(), mimeType: 'image/png' }); window.open(URL.createObjectURL(blob), '_blank', 'noopener')
   }
-  return <div className="draw-wrap"><div className="canvas-toolbar"><span><i className="live-dot"/>Canvas ready</span><div><button className="quiet-button" onClick={preview}><Download size={15}/>Preview PNG</button><button className="quiet-button" onClick={clear}><Eraser size={15}/>Clear</button><button className="primary-button" disabled={busy} onClick={exportDrawing}><Sparkles size={16}/>{busy ? 'Working…' : 'Generate from sketch'}</button></div></div><div className="excalidraw-host"><Excalidraw excalidrawAPI={api => { apiRef.current = api }} initialData={{ appState: { viewBackgroundColor: '#ffffff', gridSize: null } }} /></div>{error && <p className="error-line">{error}</p>}</div>
+  return <div className="draw-wrap"><div className="canvas-toolbar"><span><i className="live-dot"/>Canvas ready</span><div><button className="quiet-button" onClick={preview}><Download size={15}/>Preview PNG</button><button className="quiet-button" onClick={clear}><Eraser size={15}/>Clear</button><button className="primary-button" disabled={busy} onClick={exportDrawing}><Sparkles size={16}/>{busy ? 'Working…' : 'Generate from sketch'}</button></div></div><div className="excalidraw-host"><Excalidraw excalidrawAPI={api => { apiRef.current = api }} initialData={{ appState: { viewBackgroundColor: '#ffffff' } }} /></div>{error && <p className="error-line">{error}</p>}</div>
 }

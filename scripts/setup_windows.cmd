@@ -30,14 +30,15 @@ if not exist "%ROOT%\backend\.venv\Scripts\python.exe" (
 if errorlevel 1 exit /b 1
 if not exist "%ROOT%\backend\.env" copy "%ROOT%\backend\.env.example" "%ROOT%\backend\.env" >nul
 pushd "%ROOT%\frontend"
-call npm.cmd install --cache "%ROOT%\frontend\.npm-cache" --no-audit --no-fund
+call npm.cmd ci --cache "%ROOT%\frontend\.npm-cache" --no-audit --no-fund
 set "RESULT=%ERRORLEVEL%"
 popd
 if not "%RESULT%"=="0" (
   echo.
   echo Frontend setup failed. Read the first npm error above; Python setup completed.
+  echo npm ci replaces node_modules from the lockfile on every setup run.
   echo If the error names esbuild.exe as an invalid application, check Windows architecture
-  echo and security software, remove frontend\node_modules, then rerun this setup.
+  echo and security software, then rerun setup and inspect the npm debug log if it persists.
   exit /b %RESULT%
 )
 echo Setup complete. Use run_backend.cmd and run_frontend.cmd in separate terminals.
