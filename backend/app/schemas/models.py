@@ -50,13 +50,16 @@ class PreprocessingResponse(BaseModel):
     available_artifacts: list[Artifact]
 
 
-JobStatus = Literal["queued", "preprocessing", "generating", "postprocessing", "exporting", "completed", "failed", "cancelled"]
+JobStatus = Literal["queued", "preprocessing", "refining", "generating", "postprocessing", "exporting", "completed", "failed", "cancelled"]
 TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
 
 
 class GenerationOptions(BaseModel):
-    # True hands background removal to InstantMesh's rembg (best for photos);
-    # False uses the OpenCV cutout (best for sketches on a plain background).
+    # True turns the sketch (and prompt) into an object image with ControlNet
+    # before reconstruction; the generated image then goes through rembg.
+    refine_sketch: bool
+    # Without refinement: True hands background removal to InstantMesh's rembg
+    # (best for photos); False uses the OpenCV cutout (best for line drawings).
     remove_background: bool
     diffusion_steps: int = Field(default=75, ge=20, le=100)
     seed: int = Field(default=42, ge=0, le=2_147_483_647)
@@ -80,7 +83,10 @@ class JobResponse(BaseModel):
     options: dict[str, Any]
     error: JobError | None = None
     queue_position: int | None = None
+    refinement: dict[str, Any] | None = None
     input_url: str
+    control_url: str | None = None
+    refined_url: str | None = None
     preview_url: str | None = None
     multiview_url: str | None = None
     result_url: str | None = None

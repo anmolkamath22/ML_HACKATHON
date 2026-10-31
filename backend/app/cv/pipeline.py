@@ -79,6 +79,40 @@ def extract_foreground(image: np.ndarray, tolerance: int = 28) -> np.ndarray:
     return np.isin(components, keep).astype(np.uint8) * 255
 
 
+def looks_like_sketch(source: Path) -> bool:
+    """True for line drawings: mostly light, nearly colourless pixels with some dark strokes."""
+    with Image.open(source) as opened:
+        rgb = np.asarray(opened.convert("RGB").resize((256, 256)))
+    hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
+    saturation, value = hsv[:, :, 1], hsv[:, :, 2]
+    light = (value > 200).mean()
+    dark = (value < 120).mean()
+    return bool(saturation.mean() < 30 and light > 0.6 and 0.002 < dark < 0.35)
+
+
+def make_control_map(cutout: Path, destination: Path, size: int = 512) -> dict:
+    """Scribble-ControlNet input from the cropped RGBA cutout: white strokes on black.
+
+    Uses denoising and CLAHE contrast enhancement so faint pencil scans and phone
+    photos of paper sketches give clean, continuous strokes.
+    """
+    started = time.perf_counter()
+    with Image.open(cutout) as opened:
+        rgba = opened.convert("RGBA")
+    white = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
+    gray = cv2.cvtColor(np.asarray(Image.alpha_composite(white, rgba).convert("RGB")), cv2.COLOR_RGB2GRAY)
+    gray = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(cv2.fastNlMeansDenoising(gray, None, 7, 7, 21))
+    _, strokes = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    if (strokes > 0).mean() > 0.5:  # a filled silhouette, not strokes: use its outline instead
+        strokes = cv2.morphologyEx(strokes, cv2.MORPH_GRADIENT, np.ones((3, 3), np.uint8))
+    strokes = cv2.morphologyEx(strokes, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
+    strokes = cv2.resize(strokes, (size, size), interpolation=cv2.INTER_AREA)
+    strokes = cv2.dilate((strokes > 64).astype(np.uint8) * 255, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)))
+    if not cv2.imwrite(str(destination), cv2.cvtColor(strokes, cv2.COLOR_GRAY2BGR)):
+        raise RuntimeError("Could not write the ControlNet input.")
+    return {"stroke_coverage": round(float((strokes > 0).mean()), 4), "duration_ms": round((time.perf_counter() - started) * 1000, 2)}
+
+
 def prepare_reconstruction_input(source: Path, destination: Path, remove_background: bool,
                                  canvas: int = 640, fill_ratio: float = 0.85, max_dimension: int = 1024) -> dict:
     """Write the image InstantMesh receives and report how it was produced.

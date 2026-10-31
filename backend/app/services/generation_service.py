@@ -1,7 +1,7 @@
 """Generation job lifecycle: queueing, the single GPU worker, stages, cancellation and recovery.
 
-QUEUED -> PREPROCESSING -> GENERATING -> POSTPROCESSING -> EXPORTING -> COMPLETED
-(any stage may end in FAILED or CANCELLED)
+QUEUED -> PREPROCESSING -> REFINING (ControlNet, optional) -> GENERATING (InstantMesh)
+       -> POSTPROCESSING -> EXPORTING -> COMPLETED   (any stage may end in FAILED or CANCELLED)
 """
 import logging
 import queue
@@ -12,16 +12,25 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 from app.core.config import get_settings
-from app.cv.pipeline import prepare_reconstruction_input
+from app.cv.pipeline import looks_like_sketch, make_control_map, prepare_reconstruction_input
 from app.schemas.models import TERMINAL_STATUSES, GenerationOptions
 from app.services import mesh_service
-from app.services.inference_service import InferenceCancelled, InferenceError, InferenceRequest, locate_installation, runner
+from app.services.inference_service import (ControlNetRequest, InferenceCancelled, InferenceError, InferenceRequest, ensure_ready,
+                                            runner)
 from app.services.job_store import ACTIVE_STATUSES, JobStore, now
 from app.services.storage_service import storage
 
 logger = logging.getLogger(__name__)
 store = JobStore(storage.root / "jobs.db")
-JOB_FILES = {"input.png", "reconstruction_input.png", "multiview.png"}
+JOB_FILES = {"input.png", "control.png", "refined.png", "reconstruction_input.png", "multiview.png"}
+# Zero123++ (InstantMesh's first stage) works best on a single centred object on a plain background.
+_PROMPT_STYLE = "single object, centered, full view, product photo, plain white background, soft studio lighting, highly detailed"
+NEGATIVE_PROMPT = ("multiple objects, text, watermark, cropped, out of frame, blurry, low quality, deformed, "
+                   "pencil sketch, line drawing, cluttered background")
+
+
+def refinement_prompt(prompt: str | None) -> str:
+    return f"{prompt or 'an object'}, {_PROMPT_STYLE}"
 _queue: "queue.Queue[str]" = queue.Queue()
 _submit_lock = threading.Lock()
 _worker_lock = threading.Lock()
@@ -79,16 +88,32 @@ def public_job(job: dict) -> dict:
                                      "options", "error", "created_at", "started_at", "completed_at", "updated_at")},
         "timings": job["timings"] or {},
         "queue_position": store.queue_position(job_id, job["created_at"]) if job["status"] == "queued" else None,
+        "refinement": (job["details"] or {}).get("refinement"),
         "input_url": f"{base}/files/input.png",
+        "control_url": file_url("control.png"),
+        "refined_url": file_url("refined.png"),
         "preview_url": file_url("reconstruction_input.png"),
         "multiview_url": file_url("multiview.png"),
         "result_url": f"{base}/result" if job["status"] == "completed" else None,
     }
 
 
+def build_options(input_id: str, source: str, refine_sketch: bool | None, remove_background: bool | None,
+                  diffusion_steps: int, seed: int, export_texture: bool) -> GenerationOptions:
+    """Resolve 'auto' choices: refine drawings and uploaded sketches; send photos straight to rembg."""
+    original = storage.input_dir(input_id) / "original.png"
+    if not original.is_file():
+        raise FileNotFoundError("Input image was not found.")
+    is_sketch = source == "drawing" or looks_like_sketch(original)
+    refine = is_sketch if refine_sketch is None else refine_sketch
+    return GenerationOptions(refine_sketch=refine and get_settings().controlnet_enabled,
+                             remove_background=(not is_sketch) if remove_background is None else remove_background,
+                             diffusion_steps=diffusion_steps, seed=seed, export_texture=export_texture)
+
+
 def submit_job(input_id: str, source: str, prompt: str | None, options: GenerationOptions, timings: dict | None = None) -> dict:
     """Create a job for a stored input and queue it. Returns immediately."""
-    locate_installation()  # fail fast with a clear error instead of queueing a job that cannot run
+    ensure_ready()  # fail fast with a clear error instead of queueing a job that cannot run
     original = storage.input_dir(input_id) / "original.png"
     if not original.is_file():
         raise FileNotFoundError("Input image was not found.")
@@ -195,23 +220,52 @@ def _run(job_id: str) -> None:
     def timed(key: str, begun: float) -> None:
         timings[key] = round(time.perf_counter() - begun, 3)
 
-    try:
-        begun = time.perf_counter()
-        prepared = prepare_reconstruction_input(folder / "input.png", folder / "reconstruction_input.png", options.remove_background)
-        timed("preprocessing_seconds", begun)
-        storage.write_json(folder / "preprocessing.json", prepared)
-
-        stage("generating", "starting", "Waiting for the GPU.")
-
+    def progress_for(status: str):
         def on_progress(name: str, percent: int | None, message: str) -> None:
             if not cancel.is_set():
-                store.update(job_id, only_if_status=("generating",), stage=name, progress=percent, message=message)
+                store.update(job_id, only_if_status=(status,), stage=name, progress=percent, message=message)
+        return on_progress
 
+    try:
         begun = time.perf_counter()
-        inference = runner.run(InferenceRequest(
-            image=folder / "reconstruction_input.png", output_dir=folder / "instantmesh", log_path=folder / "inference.log",
-            remove_background=prepared["use_rembg"], diffusion_steps=options.diffusion_steps, seed=options.seed,
-            export_texture=options.export_texture), on_progress, cancel)
+        # Refinement starts from the OpenCV cutout of the sketch, whatever the background option says.
+        prepared = prepare_reconstruction_input(folder / "input.png", folder / "reconstruction_input.png",
+                                                options.remove_background and not options.refine_sketch)
+        if options.refine_sketch:
+            prepared["control"] = make_control_map(folder / "reconstruction_input.png", folder / "control.png")
+        timed("preprocessing_seconds", begun)
+        storage.write_json(folder / "preprocessing.json", prepared)
+        inference_input, use_rembg, source_mode = folder / "reconstruction_input.png", prepared["use_rembg"], prepared["mode"]
+        stats = []
+
+        refinement = {"status": "off", "message": "AI refinement was off for this image."}
+        if options.refine_sketch:
+            stage("refining", "controlnet_starting", "Waiting for the GPU.")
+            begun = time.perf_counter()
+            prompt = refinement_prompt(job["prompt"])
+            try:
+                refined = runner.run_controlnet(ControlNetRequest(
+                    control=folder / "control.png", output=folder / "refined.png", log_path=folder / "controlnet.log",
+                    prompt=prompt, negative_prompt=NEGATIVE_PROMPT, seed=options.seed), progress_for("refining"), cancel)
+                inference_input, use_rembg, source_mode = refined.image, True, "controlnet"
+                stats.append(refined.stats)
+                refinement = {"status": "used", "message": "ControlNet turned the sketch into an object image.",
+                              "prompt": prompt, "memory_mode": refined.info.get("memory_mode")}
+            except InferenceError as exc:
+                # Keep going with the plain cutout so a ControlNet problem never costs the user their model.
+                logger.warning("ControlNet skipped for job %s: %s", job_id, exc.code)
+                (folder / "refined.png").unlink(missing_ok=True)
+                refinement = {"status": "skipped", "code": exc.code, "message": f"{exc.message} Used the sketch cutout instead."}
+            timed("refinement_seconds", begun)
+        store.update(job_id, details={"refinement": refinement})
+
+        stage("generating", "starting", "Waiting for the GPU.")
+        begun = time.perf_counter()
+        inference = runner.run_instantmesh(InferenceRequest(
+            image=inference_input, output_dir=folder / "instantmesh", log_path=folder / "inference.log",
+            remove_background=use_rembg, diffusion_steps=options.diffusion_steps, seed=options.seed,
+            export_texture=options.export_texture), progress_for("generating"), cancel)
+        stats.append(inference.stats)
         timed("inference_seconds", begun)
         if inference.multiview_path:
             shutil.copyfile(inference.multiview_path, folder / "multiview.png")
@@ -229,9 +283,10 @@ def _run(job_id: str) -> None:
 
         companions = [path for path in inference.mesh_path.parent.iterdir() if path != inference.mesh_path]
         model.update(obj_bytes=inference.mesh_path.stat().st_size, obj_has_companion_files=bool(companions),
-                     preprocessing_mode=prepared["mode"],
-                     gpu_memory_baseline_mb=inference.gpu_memory_baseline_mb, gpu_memory_peak_mb=inference.gpu_memory_peak_mb,
-                     process_memory_peak_mb=inference.process_memory_peak_mb)
+                     preprocessing_mode=source_mode,
+                     gpu_memory_baseline_mb=stats[0].gpu_memory_baseline_mb,
+                     gpu_memory_peak_mb=_largest(item.gpu_memory_peak_mb for item in stats),
+                     process_memory_peak_mb=_largest(item.process_memory_peak_mb for item in stats))
         store.update(job_id, status="completed", stage="complete", progress=None, message="Your 3D model is ready.",
                      result={"model": model, "obj_path": str(inference.mesh_path.relative_to(folder))},
                      timings=timings, completed_at=now())
@@ -250,6 +305,11 @@ def _run(job_id: str) -> None:
     except Exception:
         logger.exception("Generation job %s failed", job_id)
         _fail(job_id, timings, "internal_error", "An unexpected error stopped this job. Check the backend log for details.")
+
+
+def _largest(values) -> int | None:
+    present = [value for value in values if value is not None]
+    return max(present) if present else None
 
 
 def _fail(job_id: str, timings: dict, code: str, message: str) -> None:

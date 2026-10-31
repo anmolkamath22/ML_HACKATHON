@@ -24,6 +24,8 @@ parser.add_argument("--no_rembg", action="store_true")
 parser.add_argument("--export_texmap", action="store_true")
 args = parser.parse_args()
 mode = os.environ.get("FAKE_INSTANTMESH_MODE", "ok")
+if mode == "oom_large_only":  # simulates a small GPU: only the large config runs out of memory
+    mode = "oom" if "large" in Path(args.config).stem else "ok"
 delay = float(os.environ.get("FAKE_INSTANTMESH_STEP_DELAY", "0"))
 config_name = Path(args.config).stem
 name = Path(args.input_path).name.split(".")[0]

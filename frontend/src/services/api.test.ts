@@ -9,19 +9,21 @@ describe('api client', () => {
   it('sends the image, prompt and options as multipart form data', async () => {
     const post = vi.spyOn(api, 'post').mockResolvedValue({ data: { job_id: 'x', job: makeJob() } })
     await generate({ image: new Blob(['png']), filename: 'sketch.png', source: 'drawing', scene: '{"elements":[]}', prompt: '  a boat ',
-      options: { remove_background: false, diffusion_steps: 50, seed: 7, export_texture: true } })
+      options: { refine_sketch: true, remove_background: false, diffusion_steps: 50, seed: 7, export_texture: true } })
     const [path, form] = post.mock.calls[0] as [string, FormData]
     expect(path).toBe('/generate')
     expect((form.get('image') as File).name).toBe('sketch.png')
     expect(Object.fromEntries([...form.entries()].filter(([key]) => key !== 'image'))).toEqual({
-      source: 'drawing', scene_json: '{"elements":[]}', prompt: 'a boat', remove_background: 'false', diffusion_steps: '50', seed: '7', export_texture: 'true' })
+      source: 'drawing', scene_json: '{"elements":[]}', prompt: 'a boat', refine_sketch: 'true', remove_background: 'false', diffusion_steps: '50', seed: '7', export_texture: 'true' })
   })
 
-  it('omits an empty prompt and can reuse a stored input', async () => {
+  it('omits an empty prompt and auto options, and can reuse a stored input', async () => {
     const post = vi.spyOn(api, 'post').mockResolvedValue({ data: {} })
-    await generate({ inputId: 'abc', source: 'upload', prompt: '   ', options: { remove_background: true, diffusion_steps: 75, seed: 42, export_texture: false } })
+    await generate({ inputId: 'abc', source: 'upload', prompt: '   ', options: { refine_sketch: null, remove_background: null, diffusion_steps: 75, seed: 42, export_texture: false } })
     const form = post.mock.calls[0][1] as FormData
     expect(form.get('prompt')).toBeNull()
+    expect(form.get('refine_sketch')).toBeNull()
+    expect(form.get('remove_background')).toBeNull()
     expect(form.get('image')).toBeNull()
     expect(form.get('input_id')).toBe('abc')
   })
@@ -35,8 +37,9 @@ describe('api client', () => {
     expect(apiErrorMessage(new Error('boom'), 'fallback')).toBe('fallback')
   })
 
-  it('builds absolute URLs for API paths', () => {
-    expect(absoluteUrl('/api/v1/jobs/1/download/glb')).toBe('http://127.0.0.1:8000/api/v1/jobs/1/download/glb')
+  it('keeps API paths on the page origin so any device can reach them', () => {
+    expect(api.defaults.baseURL).toBe('/api/v1')
+    expect(absoluteUrl('/api/v1/jobs/1/download/glb')).toBe('/api/v1/jobs/1/download/glb')
     expect(absoluteUrl('https://cdn.example/model.glb')).toBe('https://cdn.example/model.glb')
   })
 })

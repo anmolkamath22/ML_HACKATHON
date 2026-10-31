@@ -2,16 +2,20 @@ export type Artifact = { name: string; url: string }
 export type InputResult = { input_id: string; source: 'drawing' | 'upload'; filename: string; width: number; height: number; format: string; created_at: string; original_url: string }
 export type ProcessingResult = { processing_id: string; width: number; height: number; processing_duration_ms: number; recommended_image: string; available_artifacts: Artifact[] }
 
-export type JobStatus = 'queued' | 'preprocessing' | 'generating' | 'postprocessing' | 'exporting' | 'completed' | 'failed' | 'cancelled'
+export type JobStatus = 'queued' | 'preprocessing' | 'refining' | 'generating' | 'postprocessing' | 'exporting' | 'completed' | 'failed' | 'cancelled'
 export const TERMINAL_STATUSES: JobStatus[] = ['completed', 'failed', 'cancelled']
 export const isTerminal = (status: JobStatus) => TERMINAL_STATUSES.includes(status)
 
-export type GenerationOptions = { remove_background: boolean; diffusion_steps: number; seed: number; export_texture: boolean }
+/** Options as resolved by the backend for a job. */
+export type GenerationOptions = { refine_sketch: boolean; remove_background: boolean; diffusion_steps: number; seed: number; export_texture: boolean }
+/** Options as chosen in the UI; null lets the backend decide from the image (sketch or photo). */
+export type RequestedOptions = { refine_sketch: boolean | null; remove_background: boolean | null; diffusion_steps: number; seed: number; export_texture: boolean }
 export type JobError = { code: string; message: string }
+export type Refinement = { status: 'used' | 'skipped' | 'off'; message: string; code?: string; prompt?: string }
 export type GenerationJob = {
   job_id: string; input_id: string; source: 'drawing' | 'upload'; status: JobStatus; stage: string; progress: number | null; message: string
-  prompt: string | null; options: GenerationOptions; error: JobError | null; queue_position: number | null
-  input_url: string; preview_url: string | null; multiview_url: string | null; result_url: string | null
+  prompt: string | null; options: GenerationOptions; error: JobError | null; queue_position: number | null; refinement: Refinement | null
+  input_url: string; control_url: string | null; refined_url: string | null; preview_url: string | null; multiview_url: string | null; result_url: string | null
   timings: Record<string, number>; created_at: string; started_at: string | null; completed_at: string | null; updated_at: string
 }
 export type GenerateResponse = { success: true; job_id: string; status: JobStatus; message: string; status_url: string; job: GenerationJob }
@@ -24,8 +28,10 @@ export type ModelInfo = {
 }
 export type GenerationResult = { success: true; job_id: string; status: 'completed'; glb_url: string; obj_url: string; obj_format: 'obj' | 'zip'; model: ModelInfo; timings: Record<string, number> }
 
+export type GpuState = 'ready' | 'checking' | 'not_configured' | 'unavailable' | 'unsupported'
 export type Health = {
   status: string; version: string; storage_available: boolean
-  gpu: { available: boolean; name: string | null; memory_total_mb: number | null }
-  inference: { configured: boolean; model_config: string; worker: 'idle' | 'busy'; active_job_id: string | null; active_jobs: number; max_active_jobs: number }
+  gpu: { status: GpuState; available: boolean; message: string; name: string | null; memory_total_mb: number | null; backend: string | null; torch: string | null }
+  inference: { configured: boolean; ready: boolean; reason: string | null; model_config: string; controlnet_enabled: boolean
+    worker: 'idle' | 'busy'; active_job_id: string | null; active_jobs: number; max_active_jobs: number }
 }

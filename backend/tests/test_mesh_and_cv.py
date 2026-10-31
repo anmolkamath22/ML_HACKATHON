@@ -5,7 +5,8 @@ import pytest
 import trimesh
 from PIL import Image, ImageDraw
 
-from app.cv.pipeline import extract_foreground, prepare_reconstruction_input
+from app.cv.pipeline import extract_foreground, looks_like_sketch, make_control_map, prepare_reconstruction_input
+from tests.helpers import bottle_photo, cube_sketch
 from app.services import mesh_service
 from app.services.job_store import JobStore
 
@@ -96,6 +97,42 @@ def test_prepare_modes(tmp_path):
     Image.new("RGB", (200, 200), "white").save(blank)
     with pytest.raises(ValueError, match="No object"):
         prepare_reconstruction_input(blank, tmp_path / "b.png", remove_background=False)
+
+
+def test_sketch_detection(tmp_path):
+    (tmp_path / "sketch.png").write_bytes(cube_sketch())
+    (tmp_path / "photo.jpg").write_bytes(bottle_photo())
+    Image.new("RGB", (200, 200), "white").save(tmp_path / "blank.png")
+    assert looks_like_sketch(tmp_path / "sketch.png")
+    assert not looks_like_sketch(tmp_path / "photo.jpg")
+    assert not looks_like_sketch(tmp_path / "blank.png")
+
+
+def test_control_map_from_faint_noisy_scan(tmp_path):
+    rng = np.random.default_rng(1)
+    scan = np.full((400, 400), 225, np.uint8) + rng.integers(0, 20, (400, 400), dtype=np.uint8)  # grey, grainy paper
+    image = Image.fromarray(scan).convert("RGB")
+    ImageDraw.Draw(image).rectangle((100, 100, 300, 300), outline=(150, 150, 150), width=4)  # faint pencil
+    image.save(tmp_path / "scan.png")
+    prepare_reconstruction_input(tmp_path / "scan.png", tmp_path / "cut.png", remove_background=False)
+    report = make_control_map(tmp_path / "cut.png", tmp_path / "control.png")
+    control = np.asarray(Image.open(tmp_path / "control.png").convert("L"))
+    assert control.shape == (512, 512) and control[256, 256] == 0 and control[0, 0] == 0
+    assert 0.01 < report["stroke_coverage"] < 0.2
+    rows = np.flatnonzero((control > 0).any(axis=1))
+    assert rows.min() < 100 and rows.max() > 400  # the square's outline survives as one continuous shape
+
+
+def test_job_store_migrates_old_databases(tmp_path):
+    import sqlite3
+    with sqlite3.connect(tmp_path / "jobs.db") as connection:
+        connection.execute("CREATE TABLE jobs (job_id TEXT PRIMARY KEY, input_id TEXT NOT NULL, source TEXT NOT NULL, status TEXT NOT NULL, "
+                           "stage TEXT NOT NULL, progress INTEGER, message TEXT NOT NULL, prompt TEXT, options TEXT NOT NULL, error TEXT, "
+                           "result TEXT, timings TEXT NOT NULL, created_at TEXT NOT NULL, started_at TEXT, completed_at TEXT, updated_at TEXT NOT NULL)")
+    store = JobStore(tmp_path / "jobs.db")
+    store.create({"job_id": "a", "input_id": "i", "source": "upload", "status": "queued", "stage": "queued", "message": "",
+                  "options": {}, "created_at": "2026-01-01"})
+    assert store.get("a")["details"] == {}
 
 
 def test_job_store_transitions(tmp_path):

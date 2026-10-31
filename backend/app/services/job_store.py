@@ -6,7 +6,7 @@ from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 
-_JSON_FIELDS = ("options", "error", "result", "timings")
+_JSON_FIELDS = ("options", "error", "result", "timings", "details")
 _FIELDS = ("job_id", "input_id", "source", "status", "stage", "progress", "message", "prompt", *_JSON_FIELDS,
            "created_at", "started_at", "completed_at", "updated_at")
 _SCHEMA = """
@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     error TEXT,
     result TEXT,
     timings TEXT NOT NULL,
+    details TEXT,
     created_at TEXT NOT NULL,
     started_at TEXT,
     completed_at TEXT,
@@ -30,7 +31,8 @@ CREATE TABLE IF NOT EXISTS jobs (
 );
 CREATE INDEX IF NOT EXISTS jobs_status ON jobs(status, created_at);
 """
-ACTIVE_STATUSES = ("queued", "preprocessing", "generating", "postprocessing", "exporting")
+RUNNING_STATUSES = ("preprocessing", "refining", "generating", "postprocessing", "exporting")
+ACTIVE_STATUSES = ("queued", *RUNNING_STATUSES)
 
 
 def now() -> str:
@@ -46,6 +48,9 @@ class JobStore:
         with closing(self._connect()) as connection, connection:
             connection.execute("PRAGMA journal_mode=WAL")
             connection.executescript(_SCHEMA)
+            columns = {row["name"] for row in connection.execute("PRAGMA table_info(jobs)")}
+            if "details" not in columns:  # databases created before 1.1.0
+                connection.execute("ALTER TABLE jobs ADD COLUMN details TEXT")
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, timeout=10)
@@ -67,7 +72,7 @@ class JobStore:
         return job
 
     def create(self, job: dict) -> dict:
-        record = {"progress": None, "error": None, "result": None, "timings": {}, "started_at": None,
+        record = {"progress": None, "error": None, "result": None, "timings": {}, "details": {}, "started_at": None,
                   "completed_at": None, **job, "updated_at": now()}
         encoded = self._encode(record)
         columns = ", ".join(encoded)
@@ -115,5 +120,6 @@ class JobStore:
             ahead = connection.execute(
                 "SELECT COUNT(*) FROM jobs WHERE status = 'queued' AND (created_at < ? OR (created_at = ? AND job_id < ?))",
                 (created_at, created_at, job_id)).fetchone()[0]
-            running = connection.execute("SELECT COUNT(*) FROM jobs WHERE status IN ('preprocessing', 'generating', 'postprocessing', 'exporting')").fetchone()[0]
+            running = connection.execute(f"SELECT COUNT(*) FROM jobs WHERE status IN ({', '.join('?' * len(RUNNING_STATUSES))})",
+                                         RUNNING_STATUSES).fetchone()[0]
         return ahead + running + 1

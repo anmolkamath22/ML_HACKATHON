@@ -2,12 +2,20 @@
 setlocal
 set "ROOT=%~dp0.."
 echo Setting up Sketch2Shape AI for Windows...
-where python >nul 2>nul
-if errorlevel 1 (
-  echo Python 3.10+ was not found. Install Python and enable Add Python to PATH.
+rem Prefer the py launcher: winget/python.org installs often leave "python" off PATH or
+rem pointing at the Microsoft Store placeholder.
+set "PYEXE="
+py -3 -c "import sys" >nul 2>nul
+if not errorlevel 1 set "PYEXE=py -3"
+if not defined PYEXE (
+  python -c "import sys" >nul 2>nul
+  if not errorlevel 1 set "PYEXE=python"
+)
+if not defined PYEXE (
+  echo Python 3.10+ was not found. Install it with:  winget install --id Python.Python.3.10
   exit /b 1
 )
-python -c "import sys; raise SystemExit(0 if sys.version_info >= (3,10) else 1)"
+%PYEXE% -c "import sys; raise SystemExit(0 if sys.version_info >= (3,10) else 1)"
 if errorlevel 1 (
   echo Python 3.10 or newer is required.
   exit /b 1
@@ -23,7 +31,7 @@ if errorlevel 1 (
   exit /b 1
 )
 if not exist "%ROOT%\backend\.venv\Scripts\python.exe" (
-  python -m venv "%ROOT%\backend\.venv"
+  %PYEXE% -m venv "%ROOT%\backend\.venv"
   if errorlevel 1 exit /b 1
 )
 "%ROOT%\backend\.venv\Scripts\python.exe" -m pip install -r "%ROOT%\backend\requirements.txt"
@@ -41,4 +49,6 @@ if not "%RESULT%"=="0" (
   echo and security software, then rerun setup and inspect the npm debug log if it persists.
   exit /b %RESULT%
 )
-echo Setup complete. Use run_backend.cmd and run_frontend.cmd in separate terminals.
+echo Setup complete.
+echo Next on a computer with an NVIDIA GPU: scripts\setup_instantmesh_windows.cmd, then scripts\warmup_models.cmd
+echo Start the app: scripts\serve.cmd  (or scripts\serve.cmd --public for a link that works on any network)

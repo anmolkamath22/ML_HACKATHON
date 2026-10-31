@@ -6,11 +6,20 @@
 cd backend && .venv/bin/python -m pytest          # Windows: .venv\Scripts\python.exe -m pytest
 ```
 
-Tests run against isolated temporary storage. Inference uses `tests/fixtures/fake_instantmesh/run.py`, a **test double** of InstantMesh's `run.py`. It accepts the same arguments, prints the same kinds of progress output and writes the same output layout, but always produces a fixed Z-up box with vertex colours. `FAKE_INSTANTMESH_MODE` selects a failure mode: `oom`, `crash`, `missing_weights`, `no_output`, `nan` or `hang`. `FAKE_INSTANTMESH_STEP_DELAY` slows the fake diffusion steps.
+Tests run against isolated temporary storage, with every GPU stage replaced by a **test double** in `tests/fixtures/`. They need no GPU and never claim model quality.
+
+| Test double | Stands in for | Behaviour | Failure switch |
+|---|---|---|---|
+| `fake_instantmesh/run.py` | InstantMesh `run.py` | Same arguments, progress output and output layout; always writes a fixed Z-up box with vertex colours | `FAKE_INSTANTMESH_MODE`: `oom`, `crash`, `missing_weights`, `no_output`, `nan`, `hang`. `FAKE_INSTANTMESH_STEP_DELAY` slows its steps |
+| `fake_controlnet.py` | `inference_scripts/controlnet_refine.py` | Same arguments and step lines; writes a tinted copy of the line map | `FAKE_CONTROLNET_MODE`: `oom`, `missing_weights`, `no_output`, `hang` |
+| `fake_gpu_probe.py` | `inference_scripts/gpu_probe.py` | Reports a chosen GPU | `FAKE_GPU`: `cuda` (RTX 4050), `none`, `rocm`, `mps`, `old_torch` (RTX 5050 on PyTorch 2.1), `broken` |
 
 The tests cover:
 - **Upload:** validation (type, content, size, filename), plus the error format and path traversal attempts.
-- **Full pipeline:** sketch → OpenCV cutout → job → GLB/OBJ download, including the Y-up conversion and vertex colours.
+- **Full pipeline:** sketch → OpenCV cutout → ControlNet line map and prompt → InstantMesh with rembg → GLB/OBJ download, including the Y-up conversion and vertex colours.
+- **ControlNet:** auto-on for drawings and uploaded sketches, off for photos; falls back to the cutout when ControlNet fails; can be cancelled mid-run.
+- **GPU gating:** NVIDIA allowed; AMD, Apple, too-new and missing GPUs rejected with a reason.
+- **CV helpers:** sketch detection and a clean line map from a faint, noisy scan.
 - **Photo uploads:** these use rembg, and the steps and seed options are passed through.
 - **Progress:** real diffusion-step progress reported by the job.
 - **Retry:** retry from a stored input.

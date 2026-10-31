@@ -11,14 +11,13 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
 
 from app.core.config import get_settings
-from app.schemas.models import (GenerateResponse, GenerationOptions, InputDetail, InputResponse, JobListResponse, JobResponse,
+from app.schemas.models import (GenerateResponse, InputDetail, InputResponse, JobListResponse, JobResponse,
                                 PreprocessingConfig, PreprocessingResponse, ResultResponse)
 from app.services import generation_service as generation
-from app.services.inference_service import InferenceError, locate_installation
+from app.services.inference_service import InferenceError, ensure_ready, gpu_status, locate_installation
 from app.services.input_service import create_input
 from app.services.preprocessing_service import preprocess
 from app.services.storage_service import storage
-from app.utils.gpu import list_gpus
 
 router = APIRouter(prefix="/api/v1")
 _ALLOWED_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
@@ -31,18 +30,19 @@ def api_error(status: int, code: str, message: str) -> HTTPException:
 @router.get("/health")
 def health() -> dict:
     settings = get_settings()
-    gpus = list_gpus()
     try:
         locate_installation(settings)
         configured = True
     except InferenceError:
         configured = False
+    gpu = gpu_status()  # cached; never blocks on the probe
     return {"status": "ok", "version": settings.app_version,
             "storage_available": storage.root.is_dir() and os.access(storage.root, os.W_OK),
-            "gpu": {"available": bool(gpus), "name": gpus[0]["name"] if gpus else None,
-                    "memory_total_mb": gpus[0]["memory_total_mb"] if gpus else None},
-            "inference": {"configured": configured, "model_config": Path(settings.instantmesh_config).stem,
-                          **generation.worker_state()}}
+            "gpu": gpu.as_dict(),
+            "inference": {"configured": configured, "ready": configured and gpu.ready,
+                          "reason": None if configured and gpu.ready else gpu.message,
+                          "model_config": Path(settings.instantmesh_config).stem,
+                          "controlnet_enabled": settings.controlnet_enabled, **generation.worker_state()}}
 
 
 async def _create(file: UploadFile, source: str, scene_json: str | None = None) -> dict:
@@ -138,8 +138,9 @@ async def generate(
     input_id: Annotated[str | None, Form(description="Reuse a stored input instead of sending an image.")] = None,
     source: Annotated[Literal["drawing", "upload"], Form()] = "upload",
     scene_json: Annotated[str | None, Form()] = None,
-    prompt: Annotated[str | None, Form(description="Optional description. Stored with the job; InstantMesh geometry is image-driven.")] = None,
-    remove_background: Annotated[bool | None, Form(description="Use InstantMesh rembg (default for uploads) instead of the OpenCV cutout.")] = None,
+    prompt: Annotated[str | None, Form(description="Optional description of type, material, colour or style; guides the ControlNet image.")] = None,
+    refine_sketch: Annotated[bool | None, Form(description="Turn the sketch into an object image with ControlNet first. Default: on for drawings and uploaded sketches, off for photos.")] = None,
+    remove_background: Annotated[bool | None, Form(description="Without refinement: use rembg (default for photos) instead of the OpenCV cutout.")] = None,
     diffusion_steps: Annotated[int, Form(ge=20, le=100)] = 75,
     seed: Annotated[int, Form(ge=0, le=2_147_483_647)] = 42,
     export_texture: Annotated[bool, Form()] = False,
@@ -148,7 +149,7 @@ async def generate(
         raise api_error(400, "invalid_request", "Send either an image or an input_id.")
     cleaned_prompt = _clean_prompt(prompt)
     try:
-        locate_installation()
+        await run_in_threadpool(ensure_ready)
     except InferenceError as exc:
         raise api_error(503, exc.code, exc.message) from exc
     timings: dict = {}
@@ -158,9 +159,9 @@ async def generate(
         timings["input_seconds"] = round(time.perf_counter() - begun, 3)
     else:
         created = _input_metadata(input_id)
-    options = GenerationOptions(remove_background=created["source"] == "upload" if remove_background is None else remove_background,
-                                diffusion_steps=diffusion_steps, seed=seed, export_texture=export_texture)
     try:
+        options = await run_in_threadpool(generation.build_options, created["input_id"], created["source"], refine_sketch,
+                                          remove_background, diffusion_steps, seed, export_texture)
         job = generation.submit_job(created["input_id"], created["source"], cleaned_prompt, options, timings)
     except InferenceError as exc:
         raise api_error(503, exc.code, exc.message) from exc
