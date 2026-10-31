@@ -1,0 +1,9 @@
+import { Download, ScanLine } from 'lucide-react'
+import type { InputResult, ProcessingResult } from '../types'
+import { artifactUrl, downloadArtifact } from '../services/api'
+type Props = { input: InputResult; result: ProcessingResult | null; loading: boolean; error: string; onPreprocess: () => void }
+export function ProcessingPanel({ input, result, loading, error, onPreprocess }: Props) {
+  const originals = { name: 'original.png', url: input.original_url }
+  const items = result ? [originals, ...result.available_artifacts.filter(item=>item.name!=='original.png')] : [originals]
+  return <section className="results-section" id="results"><div className="section-heading"><div><p className="eyebrow">PROCESSING WORKSPACE</p><h2>Your sketch, ready to shape</h2></div>{!result&&<button className="primary-button" disabled={loading} onClick={onPreprocess}><ScanLine size={16}/>{loading?'Processing…':'Run preprocessing'}</button>}</div>{error&&<div className="notice-error">{error}</div>}{result&&<div className="result-summary"><span><i className="live-dot"/>Processing complete</span><span>{result.width} × {result.height}</span><span>{result.processing_duration_ms.toFixed(0)} ms</span><span>Recommended: {result.recommended_image}</span></div>}<div className="artifact-grid">{items.map(item=><article className={`artifact-card ${item.name==='preprocessed.png'?'recommended':''}`} key={item.name}><div className="artifact-preview"><img src={artifactUrl(item.url)} alt={item.name}/></div><div className="artifact-caption"><div><strong>{item.name.replace('.png','').replaceAll('_',' ')}</strong>{item.name==='preprocessed.png'&&<small>Recommended</small>}</div><button aria-label={`Download ${item.name}`} className="icon-button" onClick={()=>downloadArtifact(item.url,item.name)}><Download size={16}/></button></div></article>)}</div></section>
+}

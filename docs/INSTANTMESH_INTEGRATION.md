@@ -1,0 +1,3 @@
+# InstantMesh integration (future phase)
+
+No model, Torch, CUDA, or InstantMesh code is included now. The next phase should implement a typed `reconstruct_3d(input_id, image_path, output_dir, settings)` service and replace the honest 501 route. Resolve the image internally from `input_id`, optional `processing_id`, and allowlisted `selected_artifact`; never accept arbitrary filesystem paths from clients. Store OBJ/GLB in a separate `storage/models/{job_id}` directory and return IDs, artifact URLs, status and timestamps. Keep reconstruction request origin-agnostic so Excalidraw and uploads use the same contract. A later viewer can consume model artifact URLs. For long-running inference, evolve job service to persist status/progress and errors; never fabricate progress.
