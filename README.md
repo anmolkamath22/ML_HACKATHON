@@ -28,7 +28,7 @@ Photos skip the ControlNet step and go straight to rembg and InstantMesh. If Con
 | | |
 |---|---|
 | **Demo video** | _Link to be added_ |
-| **Demo machine** | Windows 11 laptop, NVIDIA GeForce RTX 2050 (4 GB VRAM). All generation in the video runs locally on this laptop |
+| **Demo machine** | Windows laptop, NVIDIA GeForce RTX 3050 Laptop GPU (_VRAM: fill in from `nvidia-smi`_). All generation in the video runs locally on this laptop |
 | **Development machine** | Windows 11 laptop without an NVIDIA GPU. The automated tests run there with test doubles in place of the GPU models (see [Tests](#tests)) |
 | **How to reproduce** | [Run it on Windows](#run-it-on-windows-step-by-step): 7 steps, all scripted |
 | **Timings and resources** | [Hardware, timings and limitations](#hardware-timings-and-limitations) |
@@ -147,11 +147,11 @@ Every job records its stage timings, peak GPU memory and peak inference RAM. The
 
 | Measured on | InstantMesh model | ControlNet | InstantMesh | Mesh + GLB | Total | Peak VRAM |
 |---|---|---|---|---|---|---|
-| Windows 11, RTX 2050 laptop (4 GB), _RAM: fill in_ | _fill in_ | _fill in_ | _fill in_ | _fill in_ | _fill in_ | _fill in_ |
+| Windows, RTX 3050 Laptop GPU (_VRAM_), _RAM: fill in_ | _fill in_ | _fill in_ | _fill in_ | _fill in_ | _fill in_ | _fill in_ |
 
 To fill in this row, generate a model in the app and copy the numbers from the result panel. Use a run after `warmup_models.cmd`, so model downloads don't count.
 
-**4 GB GPUs (RTX 2050 and similar):**
+**4–6 GB laptop GPUs (RTX 2050, RTX 3050 and similar):**
 - ControlNet automatically offloads parts of the model to system RAM.
 - If `instant-mesh-large` doesn't fit, the warm-up switches to `instant-mesh-base`.
 - On Windows, keep the NVIDIA driver's **CUDA - Sysmem Fallback Policy** (NVIDIA Control Panel → Manage 3D settings) at its default, *Driver Default* or *Prefer Sysmem Fallback*. Then a run that exceeds VRAM slows down instead of failing.
