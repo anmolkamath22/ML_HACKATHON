@@ -38,6 +38,10 @@ Python 3.10+, Node 20+, npm. From the repository root on Linux/macOS:
 
 Setup creates `backend/.venv`, installs pinned backend packages and frontend packages, and copies `.env.example` only if `.env` does not exist. For separate terminals, run `./scripts/run_backend.sh` and `./scripts/run_frontend.sh`. API docs: http://127.0.0.1:8000/docs. Frontend: http://127.0.0.1:5173.
 
+### Windows PowerShell
+
+Run `scripts\setup_windows.cmd` once, then run `scripts\run_backend.cmd` and `scripts\run_frontend.cmd` in separate PowerShell terminals. Open http://127.0.0.1:5173. The `.sh` scripts are for Linux/macOS or Git Bash; PowerShell does not execute them as shell scripts.
+
 ## API summary
 
 - `GET /api/v1/health`
