@@ -50,29 +50,66 @@ class PreprocessingResponse(BaseModel):
     available_artifacts: list[Artifact]
 
 
-class ReconstructionRequest(BaseModel):
-    input_id: str
-    processing_id: str | None = None
-    selected_artifact: str = "preprocessed.png"
-    settings: dict[str, Any] = Field(default_factory=dict)
-    prompt: str | None = None
+JobStatus = Literal["queued", "preprocessing", "generating", "postprocessing", "exporting", "completed", "failed", "cancelled"]
+TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
 
 
-class GenerationRequest(BaseModel):
-    input_id: str
-    processing_id: str | None = None
-    selected_artifact: Literal["original.png", "normalized.png", "enhanced.png", "preprocessed.png"] = "original.png"
-    prompt: str | None = Field(default=None, max_length=1000)
+class GenerationOptions(BaseModel):
+    # True hands background removal to InstantMesh's rembg (best for photos);
+    # False uses the OpenCV cutout (best for sketches on a plain background).
+    remove_background: bool
+    diffusion_steps: int = Field(default=75, ge=20, le=100)
+    seed: int = Field(default=42, ge=0, le=2_147_483_647)
+    export_texture: bool = False
+
+
+class JobError(BaseModel):
+    code: str
+    message: str
 
 
 class JobResponse(BaseModel):
     job_id: str
     input_id: str
-    status: Literal["queued", "preprocessing", "generating", "postprocessing", "completed", "failed"]
+    source: str
+    status: JobStatus
     stage: str
+    progress: int | None = None
     message: str
-    error: str | None = None
     prompt: str | None = None
+    options: dict[str, Any]
+    error: JobError | None = None
+    queue_position: int | None = None
+    input_url: str
+    preview_url: str | None = None
+    multiview_url: str | None = None
     result_url: str | None = None
+    timings: dict[str, float] = Field(default_factory=dict)
     created_at: str
+    started_at: str | None = None
+    completed_at: str | None = None
     updated_at: str
+
+
+class GenerateResponse(BaseModel):
+    success: bool = True
+    job_id: str
+    status: JobStatus
+    message: str
+    status_url: str
+    job: JobResponse
+
+
+class JobListResponse(BaseModel):
+    jobs: list[JobResponse]
+
+
+class ResultResponse(BaseModel):
+    success: bool = True
+    job_id: str
+    status: Literal["completed"]
+    glb_url: str
+    obj_url: str
+    obj_format: Literal["obj", "zip"]
+    model: dict[str, Any]
+    timings: dict[str, float]

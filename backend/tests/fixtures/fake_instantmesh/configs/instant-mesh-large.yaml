@@ -1,0 +1,3 @@
+# Placeholder config for the InstantMesh test double; never used for real inference.
+model_config: {}
+infer_config: {}

@@ -1,4 +1,3 @@
-import json
 from uuid import uuid4
 
 from app.cv.pipeline import run_pipeline

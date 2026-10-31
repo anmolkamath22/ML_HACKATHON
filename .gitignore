@@ -13,3 +13,4 @@ storage/jobs/*
 !storage/inputs/.gitkeep
 !storage/processed/.gitkeep
 !storage/jobs/.gitkeep
+storage/jobs.db*
