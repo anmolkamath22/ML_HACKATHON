@@ -1,87 +1,138 @@
-# ML_HACKATHON
-
 # Sketch2Shape AI
 
-Sketch-to-3D workspace. Draw one object in Excalidraw or upload a photo, optionally describe it, and click **Generate 3D**. The backend validates the image, cuts out the object with OpenCV, runs the official TencentARC InstantMesh pipeline (Zero123++ multi-view diffusion followed by mesh reconstruction) as a queued GPU job, validates and normalises the mesh, and exports a verified GLB. The browser shows real stage and diffusion-step progress, then loads the GLB in an interactive Three.js viewer with GLB/OBJ downloads.
+**From a 2D sketch to a 3D asset.** TechZephyr 4.0 hackathon project (IIT Bhubaneswar).
 
-## Scope
+Draw one object in the browser or upload a sketch or photo, and optionally describe it. The pipeline then:
+1. Cleans up the image with OpenCV.
+2. Turns the sketch into a realistic object image with **Stable Diffusion 1.5 + ControlNet**, guided by your description.
+3. Reconstructs a textured 3D mesh with **TencentARC InstantMesh**.
+4. Validates the mesh, then exports it as a verified **GLB** (plus the original **OBJ**).
 
-Implemented end to end:
-- Excalidraw canvas and photo upload.
-- Optional prompt, which is stored with the job but doesn't affect the geometry.
-- Generation options: background handling, diffusion steps, seed, texture map.
-- SQLite-backed jobs with a bounded queue, a single GPU worker, cancelling and restart recovery.
-- InstantMesh subprocess adapter with failure categories (out of memory, timeout, missing weights).
-- Mesh validation, Y-up normalisation and GLB export with a reload check.
-- Viewer: material, clay and wireframe modes, grid, axes, reset view, full screen.
-- Job history, dark mode and a responsive layout.
-
-The InstantMesh environment is not bundled. Point `backend/.env` at your installation (see below). Until it is configured, the UI and API say so instead of producing anything fake.
-
-## Architecture
+The result opens in an interactive 3D viewer and can be downloaded.
 
 ```mermaid
 flowchart LR
- U[Sketch or image] --> F[React + Excalidraw]
- F -->|multipart PNG / raster| I[FastAPI input API]
- I --> S[(Local storage)]
- S --> P[OpenCV preprocessing service]
- P --> A[Versioned artifact URLs]
- A --> F
- P --> R[InstantMesh single-worker job]
- R --> M[Validated OBJ and GLB]
- M --> V[Interactive Three.js viewer]
+ S[Sketch / upload + optional prompt] --> CV[OpenCV: validate, cut out, crop,<br/>denoise + CLAHE line map]
+ CV --> CN[Stable Diffusion 1.5 + ControlNet scribble<br/>sketch + prompt → object image]
+ CN --> RB[rembg background removal]
+ RB --> IM[InstantMesh: Zero123++ multi-view<br/>→ sparse-view mesh reconstruction]
+ IM --> MV[Mesh validation, Y-up, normalise]
+ MV --> GLB[Verified GLB + original OBJ]
+ GLB --> V[Three.js viewer + downloads]
 ```
 
-Both input paths call the same input service and persist a PNG original. The frontend uses IDs and artifact URLs and never reads storage paths. Each preprocessing run has a distinct processing UUID and keeps all derived files plus `result.json`.
+Photos skip the ControlNet step and go straight to rembg and InstantMesh. If ControlNet fails (for example it runs out of GPU memory), the job continues with the sketch cutout and says so.
 
-## Structure
+## Requirements
 
-`frontend/` React, TypeScript, Vite, Tailwind, official Excalidraw. `backend/app/api` routes; `schemas` contracts; `services` input/storage/preprocessing; `cv` image operations; `utils` validation. `storage/` is generated at runtime and ignored by Git. `docs/` contains API, architecture, pipeline, CV, frontend/backend, next phase, testing, and troubleshooting guides.
+| | Needed for | Notes |
+|---|---|---|
+| Python 3.10+ and Node.js 20+ | The app (UI + API) | Windows, Linux or macOS |
+| An **NVIDIA GPU with CUDA** | Generate 3D | Any CUDA GPU PyTorch supports; see [GPU support](#gpu-support) |
+| InstantMesh in its own Python 3.10 environment | Generate 3D | [Official repo](https://github.com/TencentARC/InstantMesh); that environment also needs `diffusers` and `accelerate` for ControlNet |
+| ~10 GB disk and internet on first run | Model weights | InstantMesh, Zero123++, SD 1.5 and ControlNet download from Hugging Face |
 
-## Requirements and setup
+Without a supported GPU the app still runs: you can draw, upload and inspect the OpenCV analysis, and Generate 3D is disabled with the exact reason.
 
-Python 3.10+, Node 20+, npm. Setup scripts are platform-specific so each shell uses its native virtual environment and executable paths.
-
-### Linux / macOS
+## Quick start
 
 ```bash
-./scripts/setup_linux.sh
-./scripts/run_all.sh
+# Linux / macOS
+./scripts/setup_linux.sh          # backend venv + frontend packages + backend/.env
+# Windows (PowerShell or cmd)
+scripts\setup_windows.cmd
 ```
 
-Setup creates `backend/.venv`, installs pinned backend packages and frontend packages, and copies `.env.example` only if `.env` does not exist. For separate terminals, run `./scripts/run_backend.sh` and `./scripts/run_frontend.sh`. To open both, use `./scripts/run_all.sh`.
+Set `INSTANTMESH_REPO` and `INSTANTMESH_PYTHON` in `backend/.env` (see [InstantMesh setup](docs/INSTANTMESH_INTEGRATION.md)). Then choose how to run it:
 
-### Windows PowerShell
+| Goal | Command (Linux/macOS · Windows) | Open |
+|---|---|---|
+| **Anyone, any device, any network** (judges, phones on mobile data) | `./scripts/serve.sh --public` · `scripts\serve.cmd --public` | The `https://….trycloudflare.com` link it prints |
+| Devices on the **same Wi-Fi/LAN** | `./scripts/serve.sh` · `scripts\serve.cmd` | The `http://<ip>:8000` address it prints |
+| Develop with hot reload | `./scripts/run_all.sh` · `scripts\run_all.cmd` | `http://127.0.0.1:5173` |
 
-From PowerShell at the repository root, run `scripts\setup_windows.cmd` once. Then run `scripts\run_backend.cmd` and `scripts\run_frontend.cmd` in separate terminals, or use `scripts\run_all.cmd` to open both. Open http://127.0.0.1:5173; API docs are at http://127.0.0.1:8000/docs. The `.sh` scripts are for Linux/macOS (or WSL); PowerShell does not execute them as shell scripts.
+`serve` builds the UI and serves it together with the API from one port. Any device with a modern browser (Chrome, Edge, Firefox or Safari on Windows, macOS, Linux, Android or iOS) can open it, and the device needs no GPU. Only the computer running `serve` needs one, and that computer must stay on and connected while others use the link.
 
-The setup command's `Requirement already satisfied` lines are normal pip output. If npm reports that `esbuild.exe` is an invalid application, npm did not finish installing the frontend. The Windows setup script uses a project-local npm cache and prints a targeted hint for this case. Python virtualenv activation is optional; if desired in PowerShell, use `. .\backend\.venv\Scripts\Activate.ps1` (dot, space, then script path). The run scripts use the virtualenv directly, so activation is not required.
+`--public` uses a free Cloudflare quick tunnel and needs the `cloudflared` tool installed once: `winget install --id Cloudflare.cloudflared` on Windows, `brew install cloudflared` on macOS, or the `.deb` from [cloudflared releases](https://github.com/cloudflare/cloudflared/releases) on Ubuntu. No account is needed. The link changes each time you start it, and anyone who has it can use your GPU, so share it only for the demo. On Windows, allow Python through the firewall for private networks when asked (LAN mode).
 
-## API summary
+API docs: `http://<host>:8000/docs`.
 
-- `GET /api/v1/health`: backend, GPU, worker and storage status
-- `POST /api/v1/generate`: multipart `image` (or `input_id`), `prompt`, options → 202 with a `job_id`
-- `GET /api/v1/jobs`: history. `GET /api/v1/jobs/{id}`: status, stage, progress, timings, error
-- `POST /api/v1/jobs/{id}/cancel`
-- `GET /api/v1/jobs/{id}/result`: model metadata. `GET /api/v1/jobs/{id}/download/glb|obj`
-- `/api/v1/inputs/*`: store inputs and run the optional OpenCV analysis
+## GPU support
 
-See [API_REFERENCE](docs/API_REFERENCE.md) for schemas, error codes and examples. All errors use `{"success": false, "error": {"code", "message"}}`. Uploads are limited to 10 MB and 25 million pixels; PNG, JPEG and WEBP contents are decoded and verified, not just the file extension.
+Generate 3D is enabled only when the InstantMesh environment's own PyTorch reports a usable GPU. The backend checks this at startup with `backend/inference_scripts/gpu_probe.py` instead of a fixed list of models.
 
-## Preprocessing
+| GPU | Works? | Why |
+|---|---|---|
+| NVIDIA GeForce RTX 20/30/40-series, laptop or desktop (2050, 3050, 4050, 4060, …), and other CUDA cards | **Yes** | InstantMesh and ControlNet need CUDA. 4 GB works with ControlNet's CPU offload; 6–8 GB or more is faster and more reliable |
+| NVIDIA RTX 50-series (5050, …) | Yes, **with a recent PyTorch** (CUDA 12.8 builds) | The PyTorch 2.1 used by the official InstantMesh setup has no kernels for these GPUs; the app detects this and says so |
+| AMD (ROCm), Intel, Apple Silicon (MPS) | **No** | InstantMesh's mesh renderer (nvdiffrast/FlexiCubes) is CUDA-only. The app detects these and explains why |
+| No GPU | No | Drawing, upload and OpenCV analysis still work |
 
-The CPU pipeline preserves a source copy as a normalized PNG original, composites alpha, downsizes without stretching, optionally denoises and applies CLAHE, then writes all intermediate representations. `enhanced` is the default recommendation and is configurable. Edges and threshold results are retained for comparison, not assumed to be universally best. Details and configuration are in [OPENCV_GUIDE](docs/OPENCV_GUIDE.md).
+The GPU stages run one at a time as separate processes, so ControlNet's memory is freed before InstantMesh starts. ControlNet switches to CPU offload automatically below 8 GB VRAM (`CONTROLNET_MEMORY`). If `instant-mesh-large` runs out of memory on a small card, set `INSTANTMESH_CONFIG=configs/instant-mesh-base.yaml`.
+
+## Using it
+
+1. Draw one object (Excalidraw: pencil, shapes, eraser, Clear) or upload a PNG/JPG/WEBP sketch or photo.
+2. Optionally describe it, e.g. "a red ceramic teapot". The description guides colour, material and style of the ControlNet image. The shape comes from the sketch.
+3. Optional settings:
+   - **AI refinement:** Auto, On or Off. Auto turns it on for drawings and uploaded sketches.
+   - **Background handling.**
+   - **Quality:** InstantMesh diffusion steps.
+   - **Seed.**
+   - **Texture map export.**
+4. Click **Generate 3D**. The job panel shows each stage with real step counts, the ControlNet line map and image, and the Zero123++ views.
+5. Inspect the model (orbit, zoom, pan, material, clay or wireframe view, grid, axes, full screen), then download the GLB or OBJ. **Generate another** keeps your drawing; **History** reopens earlier jobs.
+
+## Hardware, timings and limitations
+
+Every job records its stage timings, peak GPU memory and peak inference RAM. These appear in the result panel and in `GET /api/v1/jobs/{id}/result`.
+
+| Measured on | ControlNet | InstantMesh | Mesh + GLB | Total | Peak VRAM |
+|---|---|---|---|---|---|
+| _To fill in from a real run on the GPU laptop_ | | | | | |
+
+Known limitations:
+- **Hidden sides are a guess.** A single view does not show them, so InstantMesh infers them.
+- **Sketch quality matters.** Results are best for one clearly drawn object from a three-quarter view. Rough or overlapping strokes can produce merged or flat shapes.
+- **The prompt changes appearance, not shape.** It steers colour, material and style through ControlNet; InstantMesh itself has no text input.
+- **Small GPUs are slower and can run out of memory.** With 4 GB, ControlNet uses CPU offload and `instant-mesh-large` may not fit (use `instant-mesh-base`).
+- **The first run downloads model weights** (about 10 GB).
+- **Not production assets.** Output is meant for exploration, not 3D printing or animation. Both are outside the problem statement's scope.
+
+## Architecture and API
+
+The frontend is React, TypeScript and Vite with Excalidraw and Three.js (React Three Fiber). The backend is FastAPI with OpenCV and trimesh, plus a SQLite job store and one GPU worker.
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /api/v1/health` | GPU, inference readiness, worker and storage status |
+| `POST /api/v1/generate` | Image or `input_id`, prompt and options → 202 with a `job_id` |
+| `GET /api/v1/jobs`, `GET /api/v1/jobs/{id}`, `POST …/cancel` | History, status/stage/progress, cancel |
+| `GET /api/v1/jobs/{id}/result`, `GET …/download/glb\|obj` | Model metadata and downloads |
+
+Details: [Architecture](docs/ARCHITECTURE.md) · [API reference](docs/API_REFERENCE.md) · [InstantMesh and ControlNet](docs/INSTANTMESH_INTEGRATION.md) · [Testing](docs/TESTING_GUIDE.md) · [Troubleshooting](docs/TROUBLESHOOTING.md)
 
 ## Tests
 
 ```bash
-cd backend && .venv/bin/python -m pytest
+cd backend && .venv/bin/python -m pytest      # Windows: .venv\Scripts\python.exe -m pytest
 cd frontend && npm test && npm run build
 ```
 
-Backend tests use an InstantMesh **test double** (`backend/tests/fixtures/fake_instantmesh`) that follows the official CLI but writes a fixed box, so the whole pipeline can be tested without a GPU. See [TESTING_GUIDE](docs/TESTING_GUIDE.md).
+The tests run without a GPU. They replace the GPU stages with **test doubles** in `backend/tests/fixtures/`, which follow the real command-line interfaces but produce fixed outputs. These prove the plumbing, not the model quality.
 
-## InstantMesh configuration
+## Pretrained models and third-party components
 
-Keep the official TencentARC/InstantMesh checkout in its own Python environment and set `INSTANTMESH_REPO` and `INSTANTMESH_PYTHON` in `backend/.env`. Each job runs `run.py <config> <image> --output_path … --diffusion_steps … --seed …` as an isolated subprocess, one at a time, so only one copy of the models is ever in VRAM. Details, progress parsing, failure handling and a remote-GPU fallback are in [INSTANTMESH_INTEGRATION](docs/INSTANTMESH_INTEGRATION.md).
+| Component | Used for | Source | License |
+|---|---|---|---|
+| InstantMesh (TencentARC) | Image → 3D mesh | [github.com/TencentARC/InstantMesh](https://github.com/TencentARC/InstantMesh) | Apache-2.0 (code); see the repo for model terms |
+| Zero123++ v1.2 | Multi-view images inside InstantMesh | [github.com/SUDO-AI-3D/zero123plus](https://github.com/SUDO-AI-3D/zero123plus) | See the repo |
+| Stable Diffusion 1.5 | Sketch → image base model | [huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5](https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5) | CreativeML OpenRAIL-M |
+| ControlNet v1.1 scribble | Keeps the image faithful to the sketch | [huggingface.co/lllyasviel/control_v11p_sd15_scribble](https://huggingface.co/lllyasviel/control_v11p_sd15_scribble) | See the model card |
+| rembg | Background removal (inside InstantMesh) | [github.com/danielgatis/rembg](https://github.com/danielgatis/rembg) | MIT |
+| Hugging Face diffusers, PyTorch | Model runtime | huggingface/diffusers, pytorch/pytorch | Apache-2.0, BSD-3-Clause |
+| OpenCV, Pillow, NumPy, trimesh | Image preparation, mesh validation and export | opencv.org, python-pillow, numpy, mikedh/trimesh | Apache-2.0, MIT-CMU, BSD, MIT |
+| FastAPI, Uvicorn | API server | tiangolo/fastapi, encode/uvicorn | MIT, BSD-3-Clause |
+| Excalidraw, React, Three.js, React Three Fiber/drei | Drawing canvas, UI, 3D viewer | excalidraw, facebook/react, mrdoob/three.js, pmndrs | MIT |
+
+No paid or external inference APIs are used. All models run locally on the machine running the backend.

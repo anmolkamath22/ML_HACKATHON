@@ -41,11 +41,11 @@ describe('Workspace generation flow', () => {
       .mockResolvedValueOnce(makeJob({ status: 'completed', stage: 'complete', message: 'Your 3D model is ready.', result_url: `/api/v1/jobs/${JOB_ID}/result`, completed_at: '2026-10-31T10:02:00Z', timings: RESULT.timings }))
     render(<Workspace/>)
     await flush()
-    expect(screen.getByText('NVIDIA GeForce RTX 2050')).toBeTruthy()
+    expect(screen.getByText('NVIDIA GeForce RTX 4050 Laptop GPU')).toBeTruthy()
     fireEvent.change(screen.getByLabelText(/Description/), { target: { value: 'a toy boat' } })
     fireEvent.click(generateButton())
     await flush()
-    expect(mocks.generate).toHaveBeenCalledWith(expect.objectContaining({ source: 'drawing', prompt: 'a toy boat', scene: '{}', options: expect.objectContaining({ remove_background: false }) }))
+    expect(mocks.generate).toHaveBeenCalledWith(expect.objectContaining({ source: 'drawing', prompt: 'a toy boat', scene: '{}', options: expect.objectContaining({ refine_sketch: null, remove_background: null }) }))
     expect(screen.getByText('Waiting for the GPU worker.')).toBeTruthy()
     expect(generateButton().disabled).toBe(true) // no duplicate submissions while a job runs
 
@@ -55,9 +55,9 @@ describe('Workspace generation flow', () => {
 
     await act(() => vi.advanceTimersByTimeAsync(1000))
     await flush()
-    expect(screen.getByTestId('viewer').textContent).toBe(`http://127.0.0.1:8000${RESULT.glb_url}`)
-    expect(screen.getByRole('link', { name: /GLB/ }).getAttribute('href')).toBe(`http://127.0.0.1:8000${RESULT.glb_url}`)
-    expect(screen.getByRole('link', { name: /OBJ/ }).getAttribute('href')).toBe(`http://127.0.0.1:8000${RESULT.obj_url}`)
+    expect(screen.getByTestId('viewer').textContent).toBe(RESULT.glb_url)
+    expect(screen.getByRole('link', { name: /GLB/ }).getAttribute('href')).toBe(RESULT.glb_url)
+    expect(screen.getByRole('link', { name: /OBJ/ }).getAttribute('href')).toBe(RESULT.obj_url)
     expect(screen.getByText('3,900 MB')).toBeTruthy()
 
     fireEvent.click(screen.getByRole('button', { name: /Generate another/ }))
@@ -65,7 +65,7 @@ describe('Workspace generation flow', () => {
     expect(generateButton().disabled).toBe(false)
   })
 
-  it('uploads a photo with rembg enabled by default', async () => {
+  it('uploads a photo and lets the backend choose refinement and background', async () => {
     mocks.generate.mockResolvedValue({ success: true, job_id: JOB_ID, status: 'queued', message: '', status_url: '', job: makeJob({ source: 'upload' }) })
     mocks.getJob.mockResolvedValue(makeJob({ status: 'queued' }))
     render(<Workspace/>)
@@ -76,7 +76,7 @@ describe('Workspace generation flow', () => {
     fireEvent.change(screen.getByTestId('file-input'), { target: { files: [photo] } })
     fireEvent.click(generateButton())
     await flush()
-    expect(mocks.generate).toHaveBeenCalledWith(expect.objectContaining({ image: photo, filename: 'chair.jpg', source: 'upload', options: expect.objectContaining({ remove_background: true }) }))
+    expect(mocks.generate).toHaveBeenCalledWith(expect.objectContaining({ image: photo, filename: 'chair.jpg', source: 'upload', options: expect.objectContaining({ refine_sketch: null, remove_background: null }) }))
   })
 
   it('shows backend errors and keeps the button usable', async () => {
@@ -92,7 +92,7 @@ describe('Workspace generation flow', () => {
 
   it('shows failures with a retry that reuses the stored input', async () => {
     mocks.generate.mockResolvedValue({ success: true, job_id: JOB_ID, status: 'queued', message: '', status_url: '', job: makeJob() })
-    mocks.getJob.mockResolvedValue(makeJob({ status: 'failed', stage: 'failed', started_at: '2026-10-31T10:00:01Z', timings: { preprocessing_seconds: 0.1 },
+    mocks.getJob.mockResolvedValue(makeJob({ status: 'failed', stage: 'failed', started_at: '2026-10-31T10:00:01Z', timings: { preprocessing_seconds: 0.1, refinement_seconds: 30 },
       error: { code: 'gpu_out_of_memory', message: 'The GPU ran out of memory during InstantMesh inference.' } }))
     render(<Workspace/>)
     await flush()
@@ -122,12 +122,43 @@ describe('Workspace generation flow', () => {
     expect(screen.getByText('Generation cancelled')).toBeTruthy()
   })
 
-  it('blocks generation when inference is not configured or the canvas is empty', async () => {
-    mocks.health.mockResolvedValue({ ...HEALTH, inference: { ...HEALTH.inference, configured: false } })
+  it('blocks generation without a supported GPU and explains why', async () => {
+    const reason = "AMD Radeon RX 7600 (ROCm) was found, but InstantMesh's mesh renderer only runs on NVIDIA CUDA GPUs."
+    mocks.health.mockResolvedValue({ ...HEALTH, gpu: { ...HEALTH.gpu, status: 'unsupported', available: false, message: reason },
+      inference: { ...HEALTH.inference, ready: false, reason } })
     render(<Workspace/>)
     await flush()
     expect(generateButton().disabled).toBe(true)
-    expect(screen.getByText(/InstantMesh is not configured/)).toBeTruthy()
+    expect(screen.getByText(/needs a supported NVIDIA GPU on the server/).textContent).toContain('AMD Radeon RX 7600')
+    expect(screen.getByText('No supported GPU')).toBeTruthy()
+  })
+
+  it('waits while the backend is still checking the GPU', async () => {
+    mocks.health.mockResolvedValueOnce({ ...HEALTH, gpu: { ...HEALTH.gpu, status: 'checking', available: false }, inference: { ...HEALTH.inference, ready: false, reason: 'Checking' } })
+    render(<Workspace/>)
+    await flush()
+    expect(screen.getByText('Checking GPU…')).toBeTruthy()
+    expect(generateButton().disabled).toBe(false)
+    await act(() => vi.advanceTimersByTimeAsync(3000))
+    expect(screen.getByText('NVIDIA GeForce RTX 4050 Laptop GPU')).toBeTruthy()
+  })
+
+  it('shows the ControlNet stage, images and a skipped-refinement notice', async () => {
+    mocks.generate.mockResolvedValue({ success: true, job_id: JOB_ID, status: 'queued', message: '', status_url: '', job: makeJob() })
+    mocks.getJob.mockResolvedValue(makeJob({ status: 'generating', stage: 'multiview_diffusion', started_at: '2026-10-31T10:00:01Z',
+      timings: { preprocessing_seconds: 0.1, refinement_seconds: 3 }, control_url: '/api/v1/jobs/x/files/control.png',
+      preview_url: '/api/v1/jobs/x/files/reconstruction_input.png',
+      refinement: { status: 'skipped', code: 'gpu_out_of_memory', message: 'The GPU ran out of memory during ControlNet. Used the sketch cutout instead.' } }))
+    render(<Workspace/>)
+    await flush()
+    fireEvent.click(generateButton())
+    await flush()
+    await act(() => vi.advanceTimersByTimeAsync(1000))
+    expect(screen.getByText(/AI image \(ControlNet\)/)).toBeTruthy()
+    expect(screen.getByText(/skipped ·/)).toBeTruthy()
+    expect(screen.getByText(/AI refinement was skipped/)).toBeTruthy()
+    expect(screen.getByAltText('ControlNet line map')).toBeTruthy()
+    expect(screen.getByAltText('Sketch cutout sent to InstantMesh')).toBeTruthy()
   })
 
   it('opens a previous job from history', async () => {

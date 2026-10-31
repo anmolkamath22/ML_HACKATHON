@@ -1,6 +1,6 @@
 # API reference
 
-Base URL `http://127.0.0.1:8000`; all routes are under `/api/v1`. Interactive docs: `/docs`.
+Base URL `http://<host>:8000`, the same origin that serves the UI. All routes are under `/api/v1`. Interactive docs: `/docs`.
 
 Every error uses one envelope:
 
@@ -14,7 +14,7 @@ Validation errors use `code: "validation_error"` and add `fields: [{field, messa
 
 | Method | Path | Purpose | Success | Errors |
 |---|---|---|---|---|
-| GET | `/health` | Backend, GPU, inference worker and storage status (no inference run; GPU info cached 30 s) | 200 | — |
+| GET | `/health` | `gpu.status` (ready / checking / not_configured / unavailable / unsupported), `inference.ready` and `reason`, worker and storage status. Never runs inference | 200 | — |
 | POST | `/generate` | Store input, create job, queue inference; returns immediately | 202 | 400, 404, 415, 422, 503 |
 | GET | `/jobs?limit=20` | Recent jobs, newest first (history) | 200 | 422 |
 | GET | `/jobs/{job_id}` | Status, stage, progress, timings, error | 200 | 404 |
@@ -22,7 +22,7 @@ Validation errors use `code: "validation_error"` and add `fields: [{field, messa
 | GET | `/jobs/{job_id}/result` | Model metadata and download URLs of a completed job | 200 | 404, 409 |
 | GET | `/jobs/{job_id}/download/glb` | Processed GLB (`model/gltf-binary`, attachment) | 200 | 404, 409 |
 | GET | `/jobs/{job_id}/download/obj` | Original InstantMesh OBJ (`model/obj`), or a `.zip` with `.mtl` and texture when a texture map was baked | 200 | 404, 409 |
-| GET | `/jobs/{job_id}/files/{name}` | `input.png`, `reconstruction_input.png`, `multiview.png` previews | 200 | 404 |
+| GET | `/jobs/{job_id}/files/{name}` | `input.png`, `control.png`, `refined.png`, `reconstruction_input.png`, `multiview.png` previews | 200 | 404 |
 
 ### POST /generate
 
@@ -34,8 +34,9 @@ Validation errors use `code: "validation_error"` and add `fields: [{field, messa
 | `input_id` | — | Reuse a stored input (used by "Try again") |
 | `source` | `upload` | `drawing` or `upload` |
 | `scene_json` | — | Excalidraw scene, stored alongside the input |
-| `prompt` | — | ≤ 500 characters, whitespace/control characters normalised. **Stored only**; InstantMesh geometry is image-driven |
-| `remove_background` | `true` for uploads, `false` for drawings | `true` → InstantMesh's rembg; `false` → OpenCV cutout and `--no_rembg` |
+| `prompt` | — | ≤ 500 characters, whitespace/control characters normalised. Guides colour, material and style of the ControlNet image; the shape comes from the sketch |
+| `refine_sketch` | auto: `true` for drawings and uploaded sketches, `false` for photos | Run Stable Diffusion 1.5 + scribble ControlNet before InstantMesh |
+| `remove_background` | auto: `true` for photos, `false` for sketches | Without refinement: `true` → InstantMesh's rembg; `false` → OpenCV cutout and `--no_rembg`. The ControlNet image always goes through rembg |
 | `diffusion_steps` | 75 | 20–100, passed to `run.py --diffusion_steps` |
 | `seed` | 42 | 0–2³¹−1, passed to `run.py --seed` |
 | `export_texture` | `false` | `run.py --export_texmap` (texture map instead of vertex colours) |
@@ -49,19 +50,25 @@ curl -F image=@chair.jpg -F prompt="a wooden chair" http://127.0.0.1:8000/api/v1
   "status_url": "/api/v1/jobs/…", "job": { "…": "same shape as GET /jobs/{id}" } }
 ```
 
-503 codes: `inference_not_configured`, `queue_full`.
+503 codes: `inference_not_configured`, `gpu_unavailable`, `gpu_unsupported` (each with a message naming the GPU and reason), `queue_full`.
 
 ### Job status
 
-`status`: `queued → preprocessing → generating → postprocessing → exporting → completed`, or `failed` / `cancelled`.
+`status`: `queued → preprocessing → refining (ControlNet, when on) → generating (InstantMesh) → postprocessing → exporting → completed`, or `failed` / `cancelled`.
 
-`stage` gives detail within a status, e.g. `image_preparation`, `loading_models`, `multiview_diffusion`, `mesh_reconstruction`, `mesh_validation`, `glb_export`.
+`stage` gives detail within a status, e.g. `image_preparation`, `controlnet_loading`, `controlnet_diffusion`, `loading_models`, `multiview_diffusion`, `mesh_reconstruction`, `mesh_validation`, `glb_export`.
 
-`progress` is an integer only while InstantMesh reports diffusion steps (parsed from its own progress bar); otherwise `null`. No percentage is estimated.
+`progress` is an integer only while ControlNet or InstantMesh reports diffusion steps; otherwise `null`. No percentage is estimated.
 
-Other fields: `message`, `prompt`, `options`, `queue_position` (queued only), `error {code, message}`, `timings` (seconds: `input_seconds`, `preprocessing_seconds`, `inference_seconds`, `postprocessing_seconds`, `export_seconds`, `total_seconds`), `created_at`, `started_at`, `completed_at`, `updated_at`, `input_url`, `preview_url`, `multiview_url`, `result_url`.
+`refinement` is `{status: "used" | "skipped" | "off", message, code?, prompt?}`. A ControlNet failure never fails the job: it continues with the sketch cutout and reports `skipped`.
 
-Failure codes: `invalid_input`, `inference_not_configured`, `gpu_out_of_memory`, `gpu_unavailable`, `model_weights_unavailable`, `inference_environment_error`, `inference_failed`, `inference_timeout`, `no_mesh_output`, `invalid_mesh`, `interrupted`, `internal_error`.
+Other fields:
+- `message`, `prompt`, `options` (the resolved values), `queue_position` (queued only), `error {code, message}`
+- `timings`, in seconds: `input_seconds`, `preprocessing_seconds`, `refinement_seconds`, `inference_seconds`, `postprocessing_seconds`, `export_seconds`, `total_seconds`
+- `created_at`, `started_at`, `completed_at`, `updated_at`
+- Image URLs: `input_url`, `control_url` (ControlNet line map), `refined_url` (ControlNet image), `preview_url` (OpenCV cutout), `multiview_url`, `result_url`
+
+Failure codes: `invalid_input`, `inference_not_configured`, `gpu_out_of_memory`, `gpu_unavailable`, `gpu_unsupported`, `model_weights_unavailable`, `inference_environment_error`, `inference_failed`, `inference_timeout`, `no_mesh_output`, `invalid_mesh`, `interrupted`, `internal_error`.
 
 ### Result
 

@@ -1,5 +1,7 @@
-"""Generation pipeline tests. InstantMesh is replaced by tests/fixtures/fake_instantmesh,
-which mirrors the official CLI and output layout but writes a fixed box mesh."""
+"""Generation pipeline tests. Every GPU stage is replaced by a test double in tests/fixtures:
+fake_instantmesh mirrors the official CLI and output layout but writes a fixed box mesh,
+fake_controlnet mirrors controlnet_refine.py, and fake_gpu_probe reports a chosen GPU."""
+import json
 from io import BytesIO
 from pathlib import Path
 
@@ -9,11 +11,15 @@ from PIL import Image
 
 from app.core.config import get_settings
 from app.services import generation_service
-from tests.helpers import blank_image, bottle_photo, submit, wait_for
+from tests.helpers import blank_image, bottle_photo, cube_sketch, submit, wait_for
 
 
 def _argv(job_id: str) -> list[str]:
     return (generation_service.job_dir(job_id) / "instantmesh" / "argv.txt").read_text().splitlines()
+
+
+def _controlnet_argv(job_id: str) -> list[str]:
+    return json.loads((generation_service.job_dir(job_id) / "controlnet_argv.json").read_text())
 
 
 def test_sketch_to_glb_end_to_end(client):
@@ -25,16 +31,25 @@ def test_sketch_to_glb_end_to_end(client):
     job = wait_for(client, body["job_id"])
     assert job["status"] == "completed", job
     assert job["prompt"] == "a wooden crate"
-    assert job["options"] == {"remove_background": False, "diffusion_steps": 75, "seed": 42, "export_texture": False}
+    assert job["options"] == {"refine_sketch": True, "remove_background": False, "diffusion_steps": 75, "seed": 42, "export_texture": False}
     assert job["started_at"] and job["completed_at"] and job["error"] is None
-    assert {"input_seconds", "preprocessing_seconds", "inference_seconds", "postprocessing_seconds", "export_seconds", "total_seconds"} <= set(job["timings"])
+    assert {"input_seconds", "preprocessing_seconds", "refinement_seconds", "inference_seconds", "postprocessing_seconds",
+            "export_seconds", "total_seconds"} <= set(job["timings"])
 
-    # Drawings use the OpenCV cutout: RGBA, transparent background, square canvas.
+    # The OpenCV cutout: RGBA, transparent background, square canvas, interior kept.
     preview = Image.open(BytesIO(client.get(job["preview_url"]).content))
     assert preview.mode == "RGBA" and preview.size == (640, 640)
     alpha = np.asarray(preview)[:, :, 3]
-    assert alpha[0, 0] == 0 and alpha[320, 320] == 255  # the inside of the drawn cube stays foreground
-    assert "--no_rembg" in _argv(job["job_id"])
+    assert alpha[0, 0] == 0 and alpha[320, 320] == 255
+    # ControlNet input is white strokes on black; its prompt carries the user's description.
+    control = np.asarray(Image.open(BytesIO(client.get(job["control_url"]).content)).convert("L"))
+    assert control.shape == (512, 512) and control[0, 0] == 0 and control.max() == 255 and (control > 0).mean() < 0.3
+    controlnet_argv = _controlnet_argv(job["job_id"])
+    assert controlnet_argv[controlnet_argv.index("--prompt") + 1].startswith("a wooden crate, single object")
+    assert job["refinement"]["status"] == "used" and client.get(job["refined_url"]).status_code == 200
+    # InstantMesh receives the ControlNet image and removes its background with rembg.
+    argv = _argv(job["job_id"])
+    assert argv[1].endswith("refined.png") and "--no_rembg" not in argv
     assert client.get(job["multiview_url"]).status_code == 200
 
     result = client.get(f"/api/v1/jobs/{job['job_id']}/result").json()
@@ -61,8 +76,57 @@ def test_photo_upload_uses_rembg_and_options(client):
                       diffusion_steps=30, seed=7, export_texture="false")
     job = wait_for(client, response.json()["job_id"])
     assert job["status"] == "completed" and job["source"] == "upload" and job["prompt"] is None
+    assert job["options"]["refine_sketch"] is False and job["refinement"]["status"] == "off" and job["refined_url"] is None
     argv = _argv(job["job_id"])
     assert "--no_rembg" not in argv and argv[argv.index("--diffusion_steps") + 1] == "30" and argv[argv.index("--seed") + 1] == "7"
+
+
+def test_uploaded_sketch_is_refined_automatically(client):
+    job = wait_for(client, submit(client, cube_sketch(), filename="scan.png", source="upload").json()["job_id"])
+    assert job["status"] == "completed" and job["options"]["refine_sketch"] is True and job["refinement"]["status"] == "used"
+
+
+def test_refinement_can_be_turned_off(client):
+    job = wait_for(client, submit(client, refine_sketch=False).json()["job_id"])
+    assert job["status"] == "completed" and job["refinement"]["status"] == "off" and job["control_url"] is None
+    argv = _argv(job["job_id"])
+    assert argv[1].endswith("reconstruction_input.png") and "--no_rembg" in argv
+
+
+def test_controlnet_failure_falls_back_to_cutout(client, monkeypatch):
+    for mode, code in {"oom": "gpu_out_of_memory", "missing_weights": "model_weights_unavailable", "no_output": "refinement_failed"}.items():
+        monkeypatch.setenv("FAKE_CONTROLNET_MODE", mode)
+        job = wait_for(client, submit(client).json()["job_id"])
+        assert job["status"] == "completed", (mode, job)
+        assert job["refinement"]["status"] == "skipped" and job["refinement"]["code"] == code
+        assert "Used the sketch cutout instead" in job["refinement"]["message"] and job["refined_url"] is None
+        argv = _argv(job["job_id"])
+        assert argv[1].endswith("reconstruction_input.png") and "--no_rembg" in argv
+
+
+def test_cancel_during_refinement(client, monkeypatch):
+    monkeypatch.setenv("FAKE_CONTROLNET_MODE", "hang")
+    job_id = submit(client).json()["job_id"]
+    running = wait_for(client, job_id, {"refining"})
+    assert running["stage"].startswith("controlnet")
+    client.post(f"/api/v1/jobs/{job_id}/cancel")
+    assert wait_for(client, job_id, timeout=30)["status"] == "cancelled"
+    assert not (generation_service.job_dir(job_id) / "instantmesh").exists()
+
+
+def test_generation_needs_a_supported_gpu(client, fake_gpu):
+    expected = {"none": ("gpu_unavailable", "No CUDA-capable NVIDIA GPU"), "rocm": ("gpu_unsupported", "AMD Radeon RX 7600"),
+                "mps": ("gpu_unsupported", "Apple GPU"), "old_torch": ("gpu_unsupported", "PyTorch 2.1.0"),
+                "broken": ("gpu_unavailable", "libcudart")}
+    for profile, (code, text) in expected.items():
+        fake_gpu(profile)
+        response = submit(client)
+        assert response.status_code == 503 and response.json()["error"]["code"] == code, profile
+        assert text in response.json()["error"]["message"]
+        health = client.get("/api/v1/health").json()
+        assert health["inference"]["ready"] is False and text in health["inference"]["reason"]
+    fake_gpu("cuda")
+    assert submit(client).status_code == 202
 
 
 def test_upload_can_use_opencv_cutout(client):

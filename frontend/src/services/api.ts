@@ -1,8 +1,11 @@
 import axios from 'axios'
-import type { GenerateResponse, GenerationJob, GenerationOptions, GenerationResult, Health, ProcessingResult } from '../types'
+import type { GenerateResponse, GenerationJob, GenerationResult, Health, ProcessingResult, RequestedOptions } from '../types'
 
-export const API_ROOT = (import.meta.env.VITE_API_URL ?? 'http://127.0.0.1:8000/api/v1').replace(/\/$/, '')
-const ORIGIN = API_ROOT.replace(/\/api\/v1$/, '')
+// Same-origin by default: the backend serves the built UI, and the Vite dev server proxies /api,
+// so whatever address the page was opened with (localhost, a LAN IP, a tunnel) also reaches the API.
+// Set VITE_API_URL only when the API lives on another host.
+export const API_ROOT = (import.meta.env.VITE_API_URL ?? '/api/v1').replace(/\/$/, '')
+const ORIGIN = /^https?:\/\//.test(API_ROOT) ? API_ROOT.replace(/\/api\/v1$/, '') : ''
 export const api = axios.create({ baseURL: API_ROOT, timeout: 60000 })
 
 /** Turns an API path such as /api/v1/jobs/{id}/download/glb into a URL the browser can load. */
@@ -23,7 +26,7 @@ export function apiErrorMessage(error: unknown, fallback: string): string {
 
 export async function health(signal?: AbortSignal): Promise<Health> { return (await api.get('/health', { signal, timeout: 10000 })).data }
 
-export type GenerateParams = { image?: Blob; filename?: string; inputId?: string; source: 'drawing' | 'upload'; scene?: string; prompt: string; options: GenerationOptions }
+export type GenerateParams = { image?: Blob; filename?: string; inputId?: string; source: 'drawing' | 'upload'; scene?: string; prompt: string; options: RequestedOptions }
 export async function generate(params: GenerateParams): Promise<GenerateResponse> {
   const form = new FormData()
   if (params.image) form.append('image', params.image, params.filename ?? 'sketch.png')
@@ -31,7 +34,8 @@ export async function generate(params: GenerateParams): Promise<GenerateResponse
   form.append('source', params.source)
   if (params.scene) form.append('scene_json', params.scene)
   if (params.prompt.trim()) form.append('prompt', params.prompt.trim())
-  form.append('remove_background', String(params.options.remove_background))
+  if (params.options.refine_sketch !== null) form.append('refine_sketch', String(params.options.refine_sketch))
+  if (params.options.remove_background !== null) form.append('remove_background', String(params.options.remove_background))
   form.append('diffusion_steps', String(params.options.diffusion_steps))
   form.append('seed', String(params.options.seed))
   form.append('export_texture', String(params.options.export_texture))

@@ -6,12 +6,15 @@ from tests.helpers import blank_image
 
 
 def test_health(client):
+    from app.services.inference_service import gpu_status
+    gpu_status(wait=True)
     body = client.get("/api/v1/health").json()
     assert body["status"] == "ok" and body["version"]
     assert body["storage_available"] is True
-    assert set(body["gpu"]) == {"available", "name", "memory_total_mb"}
-    assert body["inference"]["configured"] is True
-    assert body["inference"]["worker"] in {"idle", "busy"}
+    assert body["gpu"]["status"] == "ready" and body["gpu"]["backend"] == "cuda"
+    assert body["gpu"]["name"] == "NVIDIA GeForce RTX 4050 Laptop GPU" and body["gpu"]["memory_total_mb"] == 6141
+    assert body["inference"]["configured"] is True and body["inference"]["ready"] is True and body["inference"]["reason"] is None
+    assert body["inference"]["worker"] in {"idle", "busy"} and body["inference"]["controlnet_enabled"] is True
 
 
 def test_upload_and_preprocess(client):

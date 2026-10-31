@@ -1,56 +1,78 @@
-# InstantMesh integration
+# InstantMesh and ControlNet integration
 
-## Configuration
+## Setting up the inference environment
 
-1. Keep the official TencentARC/InstantMesh checkout and its own Python environment (with its weights or Hugging Face cache) exactly as they are.
-2. In `backend/.env` set `INSTANTMESH_REPO` (the checkout) and `INSTANTMESH_PYTHON` (that environment's `python`). Venv symlinks are not resolved, so a venv's `bin/python` keeps its own packages.
-3. Optionally change `INSTANTMESH_CONFIG` (e.g. `configs/instant-mesh-base.yaml`) and `INFERENCE_TIMEOUT_SECONDS`.
-4. `GET /api/v1/health` reports `inference.configured`. Until it is `true`, `POST /generate` returns 503 `inference_not_configured` instead of queueing a job that cannot run.
+Both GPU stages run in **one** dedicated Python environment: InstantMesh's own environment, not the backend's.
 
-## What the adapter runs
+1. Install the official [TencentARC/InstantMesh](https://github.com/TencentARC/InstantMesh) checkout and its Python 3.10 environment as its README describes (CUDA PyTorch, `requirements.txt`). Run its sample once (`python run.py configs/instant-mesh-large.yaml examples/hatsune_miku.png --save_video`) to confirm it works and to download its weights.
+2. Make sure that environment can also run ControlNet: `pip install "diffusers>=0.20" accelerate`. diffusers is already an InstantMesh dependency; `accelerate` enables CPU offload on small GPUs.
+3. In `backend/.env` set:
+   - `INSTANTMESH_REPO`: the checkout.
+   - `INSTANTMESH_PYTHON`: that environment's `python`. Venv symlinks are deliberately not resolved, so a venv's packages stay visible.
+   - Optionally `INSTANTMESH_CONFIG` (e.g. `configs/instant-mesh-base.yaml` on 4 GB cards) and the `CONTROLNET_*` settings in `.env.example`.
+4. Start the backend and open `GET /api/v1/health`. `gpu.status` should be `ready` and `inference.ready` should be `true`. The first ControlNet job downloads Stable Diffusion 1.5 and the scribble ControlNet (about 3–4 GB) into the Hugging Face cache.
 
-`app/services/inference_service.py` runs the official CLI as an argument list (no shell):
+## GPU detection
 
-```
-<INSTANTMESH_PYTHON> run.py <config> <job>/reconstruction_input.png --output_path <job>/instantmesh \
-    --diffusion_steps N --seed S [--no_rembg] [--export_texmap]
-```
+At startup the backend runs `inference_scripts/gpu_probe.py` with `INSTANTMESH_PYTHON` in the background. The script asks that environment's own PyTorch which GPU it can use:
 
-- **One process at a time.** One worker thread runs the jobs and a process lock guards the GPU, so only one copy of the models is ever loaded. Every job uses a fresh subprocess, which frees all VRAM afterwards. This matters on a 4 GB card, at the cost of reloading the models each run.
-- **Progress.** stdout and stderr are streamed. The output lines `Loading…`, `Imagining…` and `Creating…` map to stages. Diffusion-step percentages come from InstantMesh's own tqdm bar. If upstream changes these messages, progress falls back to stage-only status; nothing is estimated.
-- **Failures.** The log tail is sorted into categories: out of memory, no CUDA, missing weights, missing package, timeout, or no OBJ. Users get a short message; the full log is kept in `storage/jobs/<id>/inference.log`.
-- **Cancel, timeout and shutdown.** The adapter kills only its own process group (`killpg` on Linux, `taskkill /T` on Windows). Jobs interrupted by a backend shutdown are marked `interrupted`. Queued jobs are re-queued on restart.
-- **Measurements.** These are taken during the run: GPU memory used (whole GPU, via `nvidia-smi`, every 2 s) and the process's peak RSS (`/proc/<pid>/status` VmHWM, Linux only). Both are reported with the result.
+| Result | `gpu.status` | Generate 3D |
+|---|---|---|
+| CUDA GPU whose architecture this PyTorch build supports (any NVIDIA RTX/GTX/data-centre card) | `ready` | Enabled |
+| CUDA GPU newer than the PyTorch build (e.g. RTX 50-series with PyTorch 2.1) | `unsupported` | Disabled. Install a PyTorch build for that GPU |
+| AMD (ROCm) or Apple (MPS) | `unsupported` | Disabled. InstantMesh's renderer is CUDA-only |
+| No GPU, broken PyTorch, or InstantMesh not configured | `unavailable` / `not_configured` | Disabled, with the reason |
 
-## Image preparation
+`POST /generate` re-checks readiness and returns 503 `gpu_unavailable`, `gpu_unsupported` or `inference_not_configured` with the same message. Successful checks are cached until restart; failed ones are retried after 60 s.
 
-- **Drawings** (and uploads with "OpenCV cutout"): the background colour is sampled from the border and the foreground is everything not connected to it. The inside of closed shapes stays foreground. The result is cropped to the object, filled to 85% of a 640×640 transparent canvas, and passed with `--no_rembg`.
-- **Photos** (default for uploads): the resized RGB image goes to InstantMesh's own rembg and foreground resizing.
-- **Images with real transparency**: the alpha channel is used as the mask.
+## Pipeline stages
 
-## Mesh post-processing
+1. **Image preparation (OpenCV, backend).**
+   - Drawings and uploaded sketches: the background colour is sampled from the border and the foreground is everything not connected to it, so the inside of closed shapes stays foreground. The object is cropped and filled to 85% of a 640×640 transparent canvas.
+   - Images with real transparency use their alpha channel.
+   - Photos are passed on resized for rembg.
+   - For ControlNet, the cutout is denoised (non-local means), contrast-enhanced (CLAHE) and thresholded (Otsu) into a 512×512 **white-on-black line map**. Filled silhouettes are reduced to their outline.
+2. **AI refinement (`inference_scripts/controlnet_refine.py`).**
+   - Stable Diffusion 1.5 with `lllyasviel/control_v11p_sd15_scribble` and a UniPC scheduler, 20 steps by default, in fp16.
+   - The prompt is the user's description (or "an object") plus a style suffix for Zero123++: a single centred object, plain white background, studio lighting. A fixed negative prompt discourages clutter, text and line-drawing output.
+   - With 8 GB VRAM or more the whole pipeline sits on the GPU; below that it uses `enable_model_cpu_offload()`.
+   - Progress comes from the pipeline's step callback (`ControlNet step i/N`).
+   - On any ControlNet failure the job continues with the sketch cutout and records `refinement.status = "skipped"` with the reason.
+3. **InstantMesh (`run.py`).**
+   - Runs `run.py <config> <image> --output_path <job>/instantmesh --diffusion_steps N --seed S [--no_rembg] [--export_texmap]`.
+   - `--no_rembg` is passed only for the OpenCV cutout. The ControlNet image and photos go through InstantMesh's rembg and foreground resizing.
+   - Progress comes from its log lines (`Loading…`, `Imagining…`, `Creating…`) and its tqdm diffusion bar.
+4. **Mesh post-processing (`mesh_service.py`).**
+   - Rejects empty or non-finite meshes and out-of-range indices, and removes degenerate faces.
+   - Rotates Z-up to Y-up, the same axis permutation as the official app, then centres and scales the model to unit size.
+   - Exports a GLB, reloads it independently and checks the counts, bounds and colour or texture.
+   - The original OBJ stays under `storage/jobs/<id>/instantmesh/`.
 
-`app/services/mesh_service.py` does the following:
-1. Loads the OBJ without vertex reordering, so vertex colours stay aligned.
-2. Rejects empty geometry, non-finite coordinates and out-of-range indices.
-3. Removes degenerate faces.
-4. Rotates Z-up to Y-up, the same axis permutation the official Gradio app applies before writing its GLB. `MESH_CONVERT_Z_UP=false` turns this off.
-5. Centres the model and scales its largest side to 1, then exports a GLB.
-6. Reloads the GLB independently. The vertex and face counts, bounds, and colour or texture must match before the job is marked complete.
+## Process handling
 
-The original InstantMesh output is kept untouched under `storage/jobs/<id>/instantmesh/`.
+- **One GPU process at a time.** Each GPU stage is a fresh subprocess under one lock, so only one model set is in VRAM and memory is fully released between stages and jobs.
+- **Commands.** Arguments are passed as a list, never through a shell. The full output goes to `controlnet.log` / `inference.log` in the job folder. Users see only short categorised messages: out of memory, unsupported GPU, no CUDA, missing weights, missing package, timeout.
+- **Cancel, timeout and shutdown** kill only the job's own process group. Queued jobs are re-queued after a restart; jobs that were running are marked `interrupted`.
+- **Measurements** taken during each stage:
+  - GPU memory, via `nvidia-smi` every 2 s (whole GPU).
+  - Process peak RSS (Linux).
+  - Per-stage durations.
 
-## Prompt
+## Remote GPU
 
-The prompt is validated and stored with the job, and shown in the job panel and history. `run.py` has no text conditioning, so it does not affect the geometry. The UI says so.
-
-## Remote GPU fallback
-
-If the local GPU can't run inference reliably, run the **backend** on the GPU machine instead. This needs no code changes because the API is the same:
-
-1. On the GPU host, configure `backend/.env` as above, add the frontend's origin to `ALLOWED_ORIGINS`, and start uvicorn with `--host 0.0.0.0` (or reach it over an SSH tunnel: `ssh -L 8000:127.0.0.1:8000 gpu-host`).
-2. On the machine running the UI, start the frontend with `VITE_API_URL=http://<gpu-host>:8000/api/v1`.
+If the computer showing the UI has no suitable GPU, run the backend (`scripts/serve.sh`) on the GPU machine and open its address from the other device. To keep a local development UI instead, start it with `VITE_API_URL=http://<gpu-host>:8000/api/v1` and add its origin to `ALLOWED_ORIGINS` on the GPU host.
 
 ## Verification status
 
-The adapter, progress parsing, failure handling, cancellation, mesh processing and UI were tested end to end against `backend/tests/fixtures/fake_instantmesh/run.py`. That is a test double that follows the official CLI and output layout but writes a fixed box mesh. Real inference, real VRAM figures and the exact upstream log strings still need a run on the RTX 2050 machine. Submit one sketch and one photo there, then check the job's `inference.log`, timings and `gpu_memory_peak_mb`.
+Everything except the models' actual output was exercised end to end without a GPU, using the test doubles in `backend/tests/fixtures/`:
+- the probe logic for every GPU type
+- stage ordering, progress parsing and the ControlNet fallback
+- cancel and timeouts
+- mesh processing and the UI
+
+Still to check on a real GPU:
+- the real ControlNet and InstantMesh output quality
+- VRAM use and timings
+- the exact upstream log strings
+
+Run one drawing and one photo there, then check each job's logs, `timings` and `gpu_memory_peak_mb`.

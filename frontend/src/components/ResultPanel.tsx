@@ -7,7 +7,8 @@ import { ModelViewer } from './ModelViewer'
 
 const formatBytes = (bytes: number) => bytes < 1024 ? `${bytes} B` : bytes < 1024 * 1024 ? `${(bytes / 1024).toFixed(0)} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`
 const formatDims = (values: number[]) => values.map(value => value.toFixed(3)).join(' × ')
-const TIMINGS: [string, string][] = [['input_seconds', 'Upload & validation'], ['preprocessing_seconds', 'Image preparation'], ['inference_seconds', 'InstantMesh inference'], ['postprocessing_seconds', 'Mesh validation'], ['export_seconds', 'GLB export'], ['total_seconds', 'Total pipeline']]
+const SOURCES: Record<string, string> = { controlnet: 'ControlNet image + rembg', opencv_cutout: 'OpenCV cutout', rembg: 'Photo + rembg', alpha: 'Image transparency' }
+const TIMINGS: [string, string][] = [['input_seconds', 'Upload & validation'], ['preprocessing_seconds', 'Image preparation'], ['refinement_seconds', 'ControlNet image'], ['inference_seconds', 'InstantMesh inference'], ['postprocessing_seconds', 'Mesh validation'], ['export_seconds', 'GLB export'], ['total_seconds', 'Total pipeline']]
 
 type Props = { job: GenerationJob; dark: boolean; onNew: () => void }
 
@@ -39,6 +40,7 @@ export function ResultPanel({ job, dark, onNew }: Props) {
         <div><dt>Bounding box (normalised)</dt><dd>{formatDims(model.dimensions)}</dd></div>
         <div><dt>Bounding box (InstantMesh units)</dt><dd>{formatDims(model.source_dimensions)}</dd></div>
         <div><dt>Colour</dt><dd>{colour}</dd></div>
+        <div><dt>Reconstructed from</dt><dd>{SOURCES[model.preprocessing_mode] ?? model.preprocessing_mode}</dd></div>
         <div><dt>Watertight</dt><dd>{model.watertight ? 'Yes' : 'No'}</dd></div>
         {model.degenerate_faces_removed > 0 && <div><dt>Degenerate faces removed</dt><dd>{model.degenerate_faces_removed.toLocaleString()}</dd></div>}
         {model.gpu_memory_peak_mb !== null && <div><dt>Peak GPU memory (whole GPU)</dt><dd>{model.gpu_memory_peak_mb.toLocaleString()} MB</dd></div>}
