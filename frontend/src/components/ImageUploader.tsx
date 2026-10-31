@@ -1,12 +1,38 @@
-import { ImagePlus, UploadCloud, X } from 'lucide-react'
-import { useRef, useState } from 'react'
-import { submitFile } from '../services/api'
-import type { InputResult } from '../types'
-type Props = { onCreated: (input: InputResult) => void; busy: boolean; setBusy: (value: boolean) => void }
-const MAX_SIZE = 10 * 1024 * 1024
-export function ImageUploader({ onCreated, busy, setBusy }: Props) {
-  const ref = useRef<HTMLInputElement>(null); const [file, setFile] = useState<File | null>(null); const [error, setError] = useState(''); const [drag, setDrag] = useState(false)
-  const choose = (candidate?: File) => { setError(''); if (!candidate) return; if (!['image/png','image/jpeg','image/webp'].includes(candidate.type)) { setError('Choose a PNG, JPG, or WEBP image.'); return } if (candidate.size > MAX_SIZE) { setError('Image is larger than 10 MB.'); return } setFile(candidate) }
-  const submit = async () => { if (!file) return; setBusy(true); setError(''); try { onCreated(await submitFile(file)) } catch { setError('Upload failed. Check that the local API is running and try again.') } finally { setBusy(false) } }
-  return <div className="upload-panel"><input ref={ref} hidden type="file" accept="image/png,image/jpeg,image/webp" onChange={event => choose(event.target.files?.[0])}/>{!file ? <div className={`drop-zone ${drag?'drag':''}`} onDragOver={event=>{event.preventDefault();setDrag(true)}} onDragLeave={()=>setDrag(false)} onDrop={event=>{event.preventDefault();setDrag(false);choose(event.dataTransfer.files[0])}}><div className="upload-icon"><UploadCloud size={23}/></div><h3>Drop your sketch here</h3><p>PNG, JPG, or WEBP · up to 10 MB</p><button className="secondary-button" onClick={()=>ref.current?.click()}>Browse files</button></div> : <div className="file-card"><img src={URL.createObjectURL(file)} alt="Selected sketch"/><div className="file-meta"><strong>{file.name}</strong><span>{(file.size/1024).toFixed(0)} KB · image preview</span><button className="text-button" onClick={()=>{setFile(null);if(ref.current)ref.current.value=''}}>Replace image</button></div><button className="icon-button" aria-label="Remove image" onClick={()=>setFile(null)}><X size={17}/></button></div>}{error&&<p className="error-line">{error}</p>}{file&&<button className="primary-button upload-submit" disabled={busy} onClick={submit}><ImagePlus size={16}/>{busy?'Uploading…':'Upload and process'}</button>}</div>
+import { UploadCloud, X } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+
+export const ACCEPTED_TYPES = ['image/png', 'image/jpeg', 'image/webp']
+export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+type Props = { file: File | null; onChange: (file: File | null) => void; disabled?: boolean }
+
+export function ImageUploader({ file, onChange, disabled }: Props) {
+  const ref = useRef<HTMLInputElement>(null)
+  const [error, setError] = useState('')
+  const [drag, setDrag] = useState(false)
+  const [preview, setPreview] = useState<string | null>(null)
+  useEffect(() => {
+    if (!file) { setPreview(null); return }
+    const url = URL.createObjectURL(file); setPreview(url)
+    return () => URL.revokeObjectURL(url)
+  }, [file])
+
+  const choose = (candidate?: File) => {
+    setError('')
+    if (!candidate) return
+    if (!ACCEPTED_TYPES.includes(candidate.type)) { setError('Choose a PNG, JPG, or WEBP image.'); return }
+    if (candidate.size > MAX_UPLOAD_BYTES) { setError('Image is larger than 10 MB.'); return }
+    onChange(candidate)
+  }
+  const clear = () => { onChange(null); setError(''); if (ref.current) ref.current.value = '' }
+
+  return <div className="upload-panel">
+    <input ref={ref} hidden type="file" data-testid="file-input" accept={ACCEPTED_TYPES.join(',')} onChange={event => choose(event.target.files?.[0])}/>
+    {!file
+      ? <div className={`drop-zone ${drag ? 'drag' : ''}`} onDragOver={event => { event.preventDefault(); setDrag(true) }} onDragLeave={() => setDrag(false)} onDrop={event => { event.preventDefault(); setDrag(false); choose(event.dataTransfer.files[0]) }}>
+          <div className="upload-icon"><UploadCloud size={23}/></div><h3>Drop a sketch or photo here</h3><p>PNG, JPG, or WEBP · up to 10 MB · one object on a plain background works best</p>
+          <button className="secondary-button" disabled={disabled} onClick={() => ref.current?.click()}>Browse files</button>
+        </div>
+      : <div className="file-card">{preview && <img src={preview} alt="Selected upload"/>}<div className="file-meta"><strong>{file.name}</strong><span>{(file.size / 1024).toFixed(0)} KB</span><button className="text-button" disabled={disabled} onClick={() => ref.current?.click()}>Replace image</button></div><button className="icon-button" aria-label="Remove image" disabled={disabled} onClick={clear}><X size={17}/></button></div>}
+    {error && <p className="error-line" role="alert">{error}</p>}
+  </div>
 }

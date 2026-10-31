@@ -6,16 +6,24 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     app_name: str = "Sketch2Shape AI"
-    app_version: str = "0.1.0"
+    app_version: str = "1.0.0"
     storage_root: Path = Path("../storage")
     max_upload_bytes: int = 10 * 1024 * 1024
     max_image_pixels: int = 25_000_000
     max_image_dimension: int = 12_000
+    max_prompt_length: int = 500
     allowed_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
     instantmesh_repo: Path | None = None
     instantmesh_python: Path | None = None
     instantmesh_config: str = "configs/instant-mesh-large.yaml"
     inference_timeout_seconds: int = 1800
+    # Jobs that are queued or running at once; the GPU itself only ever runs one.
+    max_active_jobs: int = 4
+    # InstantMesh's run.py writes Z-up OBJ files; glTF is Y-up. The official
+    # Gradio app applies the same axis rotation before writing its GLB.
+    mesh_convert_z_up: bool = True
+    mesh_max_faces: int = 2_000_000
+    gpu_sample_interval_seconds: float = 2.0
     model_config = SettingsConfigDict(env_file=".env", extra="ignore", env_ignore_empty=True)
 
     @property

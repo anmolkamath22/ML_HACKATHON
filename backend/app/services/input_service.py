@@ -1,8 +1,6 @@
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from PIL import Image
-
 from app.services.storage_service import storage
 from app.utils.image_validation import inspect_image
 
