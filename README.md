@@ -43,7 +43,12 @@ Without a supported GPU the app still runs: you can draw, upload and inspect the
 scripts\setup_windows.cmd
 ```
 
-Set `INSTANTMESH_REPO` and `INSTANTMESH_PYTHON` in `backend/.env` (see [InstantMesh setup](docs/INSTANTMESH_INTEGRATION.md)). Then choose how to run it:
+Then set up the GPU part (InstantMesh + ControlNet) on the computer with the NVIDIA GPU:
+
+- **Windows:** run `scripts\setup_instantmesh_windows.cmd`. It checks the GPU, picks the right PyTorch (including RTX 50-series), installs InstantMesh into `third_party\`, fills in `backend\.env` and compiles the renderer. It needs Python 3.10, Git, Visual Studio C++ Build Tools and the CUDA Toolkit; it tells you how to install any that are missing.
+- **Linux:** follow the official InstantMesh README, then set `INSTANTMESH_REPO` and `INSTANTMESH_PYTHON` in `backend/.env` (see [InstantMesh setup](docs/INSTANTMESH_INTEGRATION.md)).
+
+Then choose how to run it:
 
 | Goal | Command (Linux/macOS · Windows) | Open |
 |---|---|---|

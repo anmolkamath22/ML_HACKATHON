@@ -1,0 +1,5 @@
+# Windows batch files must keep CRLF (cmd mis-parses labels/goto with LF);
+# shell scripts must keep LF so they run on Linux/macOS even after a Windows checkout.
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.sh text eol=lf

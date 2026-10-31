@@ -14,3 +14,4 @@ storage/jobs/*
 !storage/processed/.gitkeep
 !storage/jobs/.gitkeep
 storage/jobs.db*
+third_party/
