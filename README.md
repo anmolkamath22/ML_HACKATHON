@@ -1,3 +1,5 @@
+# ML_HACKATHON
+
 # Sketch2Shape AI
 
 Local first phase of a sketch-to-3D workspace. Users can draw with the official Excalidraw editor or upload a PNG/JPEG/WEBP. FastAPI validates and stores the original, then a modular OpenCV pipeline creates normalized, grayscale, enhanced, edge, binary, and recommended artifacts.
