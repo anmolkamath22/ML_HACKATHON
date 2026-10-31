@@ -273,7 +273,16 @@ def _terminate(process: subprocess.Popen) -> None:
 
 
 def _peak_rss_mb(pid: int) -> int | None:
-    """Peak resident memory of the process (Linux only)."""
+    """Peak resident memory of the GPU process (largest of it and its children)."""
+    if os.name == "nt":
+        # A Windows venv's python.exe is a launcher that starts the real interpreter as a child.
+        try:
+            import psutil
+            process = psutil.Process(pid)
+            peaks = [item.memory_info().peak_wset for item in (process, *process.children(recursive=True))]
+            return max(peaks) // (1024 * 1024) if peaks else None
+        except Exception:  # noqa: BLE001 - psutil missing or the process just exited
+            return None
     try:
         for line in Path(f"/proc/{pid}/status").read_text().splitlines():
             if line.startswith("VmHWM:"):

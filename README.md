@@ -23,44 +23,97 @@ flowchart LR
 
 Photos skip the ControlNet step and go straight to rembg and InstantMesh. If ControlNet fails (for example it runs out of GPU memory), the job continues with the sketch cutout and says so.
 
-## Requirements
+## For judges
 
-| | Needed for | Notes |
-|---|---|---|
-| Python 3.10+ and Node.js 20+ | The app (UI + API) | Windows, Linux or macOS |
-| An **NVIDIA GPU with CUDA** | Generate 3D | Any CUDA GPU PyTorch supports; see [GPU support](#gpu-support) |
-| InstantMesh in its own Python 3.10 environment | Generate 3D | [Official repo](https://github.com/TencentARC/InstantMesh); that environment also needs `diffusers` and `accelerate` for ControlNet |
-| ~10 GB disk and internet on first run | Model weights | InstantMesh, Zero123++, SD 1.5 and ControlNet download from Hugging Face |
+| | |
+|---|---|
+| **Demo video** | _Link to be added_ |
+| **Demo machine** | Windows 11 laptop, NVIDIA GeForce RTX 2050 (4 GB VRAM). All generation in the video runs locally on this laptop |
+| **Development machine** | Windows 11 laptop without an NVIDIA GPU. The automated tests run there with test doubles in place of the GPU models (see [Tests](#tests)) |
+| **How to reproduce** | [Run it on Windows](#run-it-on-windows-step-by-step): 7 steps, all scripted |
+| **Timings and resources** | [Hardware, timings and limitations](#hardware-timings-and-limitations) |
 
-Without a supported GPU the app still runs: you can draw, upload and inspect the OpenCV analysis, and Generate 3D is disabled with the exact reason.
+**Where the GPU work happens.** The 3D generation runs on the computer that runs the backend, and that computer needs an NVIDIA GPU. The web page itself can be opened from any device and browser: phone, tablet, Mac or Chromebook. That device doesn't need a GPU; it only displays the page and the 3D viewer. Browsers cannot run InstantMesh, whose renderer is CUDA-only, on a visitor's own GPU.
 
-## Quick start
+**Without an NVIDIA GPU** the app still starts. Drawing, uploading and the OpenCV analysis work, and **Generate 3D** is disabled with the exact reason, e.g. "No CUDA-capable NVIDIA GPU is visible".
 
-```bash
-# Linux / macOS
-./scripts/setup_linux.sh          # backend venv + frontend packages + backend/.env
-# Windows (PowerShell or cmd)
+## Run it on Windows (step by step)
+
+Tested path: Windows 10/11 + NVIDIA GPU. Run these in **PowerShell** from the folder where you want the project. Total download is about 15 GB (tools, Python packages and model weights), mostly in steps 2 and 5.
+
+**1. Install the tools** (once). Close and reopen PowerShell afterwards.
+
+```powershell
+winget install --id Git.Git
+winget install --id Python.Python.3.10
+winget install --id OpenJS.NodeJS.LTS
+winget install --id Microsoft.VisualStudio.2022.BuildTools --override "--add Microsoft.VisualStudio.Workload.VCTools --includeRecommended --passive"
+winget install --id Cloudflare.cloudflared
+```
+
+Also install the **CUDA Toolkit 12.6** from https://developer.nvidia.com/cuda-12-6-3-download-archive (use 12.8 for RTX 50-series). Use a current NVIDIA driver; `nvidia-smi` should list the GPU.
+
+**2. Get the code and set up the app**
+
+```powershell
+git clone https://github.com/anmolkamath22/ML_HACKATHON.git
+cd ML_HACKATHON
 scripts\setup_windows.cmd
 ```
 
-Then set up the GPU part (InstantMesh + ControlNet) on the computer with the NVIDIA GPU:
+**3. Install the GPU part** (InstantMesh, PyTorch, ControlNet runtime, about 5 GB)
 
-- **Windows:** run `scripts\setup_instantmesh_windows.cmd`. It checks the GPU, picks the right PyTorch (including RTX 50-series), installs InstantMesh into `third_party\`, fills in `backend\.env` and compiles the renderer. It needs Python 3.10, Git, Visual Studio C++ Build Tools and the CUDA Toolkit; it tells you how to install any that are missing.
-- **Linux:** follow the official InstantMesh README, then set `INSTANTMESH_REPO` and `INSTANTMESH_PYTHON` in `backend/.env` (see [InstantMesh setup](docs/INSTANTMESH_INTEGRATION.md)).
+```powershell
+scripts\setup_instantmesh_windows.cmd
+```
 
-Then choose how to run it:
+This script:
+- checks the GPU and picks the matching PyTorch build
+- downloads the official InstantMesh code into `third_party\`
+- fills in `backend\.env`
+- compiles the nvdiffrast renderer once
 
-| Goal | Command (Linux/macOS · Windows) | Open |
+If a tool from step 1 is missing, it stops and prints the command to install it.
+
+**4. Download the models and run one test generation** (about 10 GB the first time)
+
+```powershell
+scripts\warmup_models.cmd
+```
+
+This runs ControlNet and InstantMesh once on a sample sketch. On 4 GB GPUs, if `instant-mesh-large` runs out of memory, it switches to `instant-mesh-base` automatically and saves that choice. It ends by printing the GPU, timings and peak GPU memory.
+
+**5. Start the app**
+
+```powershell
+scripts\serve.cmd --public
+```
+
+Open the `https://….trycloudflare.com` link it prints, on this laptop or any other device. Without `--public` it prints `http://<ip>:8000` addresses, which only work on the same Wi-Fi. Keep both windows open while using it; press Ctrl+C to stop.
+
+**6. Try it:** draw an object (or upload a sketch or photo), optionally describe it, click **Generate 3D**, then inspect and download the GLB/OBJ.
+
+**7. Optional checks:** `cd backend; .venv\Scripts\python.exe -m pytest` and `cd frontend; npm test` (no GPU needed).
+
+### Linux / macOS
+
+`./scripts/setup_linux.sh`, then install InstantMesh by following its [official README](https://github.com/TencentARC/InstantMesh) and set `INSTANTMESH_REPO` and `INSTANTMESH_PYTHON` in `backend/.env`. In the InstantMesh environment, also run `pip install accelerate` for ControlNet. Start with `./scripts/serve.sh --public`. macOS cannot generate (no NVIDIA GPU) but can open the page from another machine. Details: [InstantMesh setup](docs/INSTANTMESH_INTEGRATION.md).
+
+### Ways to run
+
+| Goal | Windows · Linux | Open |
 |---|---|---|
-| **Anyone, any device, any network** (judges, phones on mobile data) | `./scripts/serve.sh --public` · `scripts\serve.cmd --public` | The `https://….trycloudflare.com` link it prints |
-| Devices on the **same Wi-Fi/LAN** | `./scripts/serve.sh` · `scripts\serve.cmd` | The `http://<ip>:8000` address it prints |
-| Develop with hot reload | `./scripts/run_all.sh` · `scripts\run_all.cmd` | `http://127.0.0.1:5173` |
+| Anyone, any device, any network | `scripts\serve.cmd --public` · `./scripts/serve.sh --public` | The `https://….trycloudflare.com` link it prints |
+| Devices on the same Wi-Fi/LAN | `scripts\serve.cmd` · `./scripts/serve.sh` | The `http://<ip>:8000` address it prints |
+| Develop with hot reload | `scripts\run_all.cmd` · `./scripts/run_all.sh` | `http://127.0.0.1:5173` |
 
-`serve` builds the UI and serves it together with the API from one port. Any device with a modern browser (Chrome, Edge, Firefox or Safari on Windows, macOS, Linux, Android or iOS) can open it, and the device needs no GPU. Only the computer running `serve` needs one, and that computer must stay on and connected while others use the link.
+About the public link:
+- It uses a free Cloudflare quick tunnel (no account needed).
+- It changes each time you start it.
+- It only works while the laptop runs the app.
+- Anyone who has it can use the GPU, so share it only for the demo.
 
-`--public` uses a free Cloudflare quick tunnel and needs the `cloudflared` tool installed once: `winget install --id Cloudflare.cloudflared` on Windows, `brew install cloudflared` on macOS, or the `.deb` from [cloudflared releases](https://github.com/cloudflare/cloudflared/releases) on Ubuntu. No account is needed. The link changes each time you start it, and anyone who has it can use your GPU, so share it only for the demo. On Windows, allow Python through the firewall for private networks when asked (LAN mode).
-
-API docs: `http://<host>:8000/docs`.
+In LAN mode on Windows, allow Python through the firewall for private networks when asked. API docs are at `/docs` on the same address.
 
 ## GPU support
 
@@ -92,9 +145,18 @@ The GPU stages run one at a time as separate processes, so ControlNet's memory i
 
 Every job records its stage timings, peak GPU memory and peak inference RAM. These appear in the result panel and in `GET /api/v1/jobs/{id}/result`.
 
-| Measured on | ControlNet | InstantMesh | Mesh + GLB | Total | Peak VRAM |
-|---|---|---|---|---|---|
-| _To fill in from a real run on the GPU laptop_ | | | | | |
+| Measured on | InstantMesh model | ControlNet | InstantMesh | Mesh + GLB | Total | Peak VRAM |
+|---|---|---|---|---|---|---|
+| Windows 11, RTX 2050 laptop (4 GB), _RAM: fill in_ | _fill in_ | _fill in_ | _fill in_ | _fill in_ | _fill in_ | _fill in_ |
+
+To fill in this row, generate a model in the app and copy the numbers from the result panel. Use a run after `warmup_models.cmd`, so model downloads don't count.
+
+**4 GB GPUs (RTX 2050 and similar):**
+- ControlNet automatically offloads parts of the model to system RAM.
+- If `instant-mesh-large` doesn't fit, the warm-up switches to `instant-mesh-base`.
+- On Windows, keep the NVIDIA driver's **CUDA - Sysmem Fallback Policy** (NVIDIA Control Panel → Manage 3D settings) at its default, *Driver Default* or *Prefer Sysmem Fallback*. Then a run that exceeds VRAM slows down instead of failing.
+- Close games and other GPU-heavy apps while generating.
+- Generation takes minutes, not seconds, on these GPUs.
 
 Known limitations:
 - **Hidden sides are a guess.** A single view does not show them, so InstantMesh infers them.

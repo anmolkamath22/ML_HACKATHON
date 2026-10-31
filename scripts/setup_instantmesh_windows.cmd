@@ -55,7 +55,8 @@ if not defined HAS_VC (
   echo     winget install --id Microsoft.VisualStudio.2022.BuildTools --override "--add Microsoft.VisualStudio.Workload.VCTools --includeRecommended --passive"
 )
 if defined NO_CUDA (
-  echo Missing: NVIDIA CUDA Toolkit ^(12.1 for most GPUs, 12.8 for RTX 50^): https://developer.nvidia.com/cuda-toolkit-archive
+  echo Missing: NVIDIA CUDA Toolkit 12.x. Install 12.6 ^(12.8 for RTX 50^); CUDA 12.1-12.3 refuse current Visual Studio 2022:
+  echo     https://developer.nvidia.com/cuda-12-6-3-download-archive
 )
 if not defined HAS_VC if not defined SKIP_BUILD_TOOLS_CHECK (
   echo Install the missing tools, open a new terminal and rerun. To continue anyway: set SKIP_BUILD_TOOLS_CHECK=1
@@ -91,7 +92,8 @@ if defined XFORMERS (
 )
 "%PY%" -m pip install -r "%REPO%\requirements.txt"
 if errorlevel 1 exit /b 1
-"%PY%" -m pip install accelerate
+rem accelerate: ControlNet CPU offload on small GPUs. ninja: PyTorch needs it to compile nvdiffrast.
+"%PY%" -m pip install accelerate ninja
 if errorlevel 1 exit /b 1
 
 echo [7/7] Configuring the backend and checking the GPU from the new environment...
@@ -104,5 +106,4 @@ if errorlevel 1 (
   exit /b 1
 )
 echo.
-echo Done. Start the app with scripts\serve.cmd ^(same Wi-Fi^) or scripts\serve.cmd --public ^(any network^).
-echo The first generation downloads the model weights ^(about 10 GB^) from Hugging Face.
+echo Done. Next: scripts\warmup_models.cmd downloads every model ^(about 10 GB^) and runs one real test generation.
