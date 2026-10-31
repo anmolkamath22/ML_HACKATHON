@@ -1,4 +1,5 @@
 from io import BytesIO
+import time
 
 from fastapi.testclient import TestClient
 from PIL import Image
@@ -42,11 +43,26 @@ def test_invalid_and_corrupt_images_rejected():
     assert corrupt.status_code == 400
 
 
-def test_drawing_and_reconstruction_placeholder():
+def test_drawing_and_generation_job():
     drawing = client.post("/api/v1/inputs/drawing", files={"image": ("drawing.png", image_bytes("PNG", "RGBA"), "image/png")}, data={"scene_json": "{}", "source": "drawing"})
     assert drawing.status_code == 201 and drawing.json()["source"] == "drawing"
-    reconstruction = client.post("/api/v1/reconstruction", json={"input_id": drawing.json()["input_id"]})
-    assert reconstruction.status_code == 501
+    response = client.post("/api/v1/generate", json={"input_id": drawing.json()["input_id"], "prompt": "a small toy boat"})
+    assert response.status_code == 202
+    job = response.json()
+    assert job["job_id"] and job["prompt"] == "a small toy boat"
+    for _ in range(50):
+        status = client.get(f"/api/v1/jobs/{job['job_id']}").json()
+        if status["status"] in {"failed", "completed"}:
+            break
+        time.sleep(0.02)
+    assert status["status"] == "failed"  # This checkout has no configured InstantMesh environment.
+    assert "not configured" in status["error"]
+
+
+def test_processed_artifact_requires_processing_id():
+    created = client.post("/api/v1/inputs/upload", files={"file": ("sketch.png", image_bytes(), "image/png")})
+    response = client.post("/api/v1/generate", json={"input_id": created.json()["input_id"], "selected_artifact": "enhanced.png"})
+    assert response.status_code == 400
 
 
 def test_missing_input():

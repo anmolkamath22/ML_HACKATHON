@@ -56,3 +56,23 @@ class ReconstructionRequest(BaseModel):
     selected_artifact: str = "preprocessed.png"
     settings: dict[str, Any] = Field(default_factory=dict)
     prompt: str | None = None
+
+
+class GenerationRequest(BaseModel):
+    input_id: str
+    processing_id: str | None = None
+    selected_artifact: Literal["original.png", "normalized.png", "enhanced.png", "preprocessed.png"] = "original.png"
+    prompt: str | None = Field(default=None, max_length=1000)
+
+
+class JobResponse(BaseModel):
+    job_id: str
+    input_id: str
+    status: Literal["queued", "preprocessing", "generating", "postprocessing", "completed", "failed"]
+    stage: str
+    message: str
+    error: str | None = None
+    prompt: str | None = None
+    result_url: str | None = None
+    created_at: str
+    updated_at: str

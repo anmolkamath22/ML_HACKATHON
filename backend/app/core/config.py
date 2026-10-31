@@ -12,7 +12,11 @@ class Settings(BaseSettings):
     max_image_pixels: int = 25_000_000
     max_image_dimension: int = 12_000
     allowed_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    instantmesh_repo: Path | None = None
+    instantmesh_python: Path | None = None
+    instantmesh_config: str = "configs/instant-mesh-large.yaml"
+    inference_timeout_seconds: int = 1800
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore", env_ignore_empty=True)
 
     @property
     def origins(self) -> list[str]:

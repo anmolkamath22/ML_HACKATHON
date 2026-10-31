@@ -1,5 +1,5 @@
 import axios from 'axios'
-import type { InputResult, ProcessingResult } from '../types'
+import type { GenerationJob, InputResult, ProcessingResult } from '../types'
 const api = axios.create({ baseURL: import.meta.env.VITE_API_URL ?? 'http://127.0.0.1:8000/api/v1', timeout: 120000 })
 export async function health() { return (await api.get('/health')).data }
 export async function submitFile(file: File, drawing = false, scene?: string): Promise<InputResult> {
@@ -8,6 +8,10 @@ export async function submitFile(file: File, drawing = false, scene?: string): P
   return (await api.post(drawing ? '/inputs/drawing' : '/inputs/upload', form)).data
 }
 export async function preprocess(id: string): Promise<ProcessingResult> { return (await api.post(`/inputs/${id}/preprocess`, {})).data }
+export async function generate(inputId: string, prompt: string): Promise<GenerationJob> {
+  return (await api.post('/generate', { input_id: inputId, prompt: prompt || null })).data
+}
+export async function getJob(id: string): Promise<GenerationJob> { return (await api.get(`/jobs/${id}`)).data }
 export function artifactUrl(url: string) { return `${api.defaults.baseURL?.replace('/api/v1', '')}${url}` }
 export async function downloadArtifact(url: string, filename: string) {
   const response = await api.get(url.replace('/api/v1', ''), { responseType: 'blob' })

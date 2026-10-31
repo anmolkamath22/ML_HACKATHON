@@ -6,7 +6,7 @@ Local first phase of a sketch-to-3D workspace. Users can draw with the official 
 
 ## Scope
 
-Implemented: Excalidraw canvas with PNG and scene JSON export; raster upload; UUID filesystem storage; content validation; configurable synchronous OpenCV preprocessing; artifact URLs/download; local API and responsive workspace UI. The reconstruction endpoint is an honest HTTP 501 placeholder. InstantMesh, model generation, user accounts, and background jobs are planned and not implemented. Automated backend tests are present; execution status is recorded in the handoff report.
+Implemented: Excalidraw canvas with PNG and scene JSON export; raster upload; UUID filesystem storage; content validation; configurable synchronous OpenCV preprocessing; artifact URLs/download; local API and responsive workspace UI. Generation jobs now have persisted status, a single-worker queue, an isolated subprocess adapter for the official InstantMesh CLI, validated OBJ-to-GLB export, and download routes. Actual model generation requires the dedicated InstantMesh environment described below; it is not bundled and no generated mesh is claimed by this checkout.
 
 ## Architecture
 
@@ -18,7 +18,9 @@ flowchart LR
  S --> P[OpenCV preprocessing service]
  P --> A[Versioned artifact URLs]
  A --> F
- P -. next phase .-> R[InstantMesh adapter]
+ P --> R[InstantMesh single-worker job]
+ R --> M[Validated OBJ and GLB]
+ M --> V[Interactive Three.js viewer]
 ```
 
 Both input paths call the same input service and persist a PNG original. The frontend uses IDs and artifact URLs and never reads storage paths. Each preprocessing run has a distinct processing UUID and keeps all derived files plus `result.json`.
@@ -55,7 +57,9 @@ The setup command's `Requirement already satisfied` lines are normal pip output.
 - `POST /api/v1/inputs/{input_id}/preprocess` optional JSON config
 - `GET /api/v1/inputs/{input_id}/artifacts/original.png`
 - `GET /api/v1/inputs/{input_id}/processing/{processing_id}/{artifact_name}`
-- `POST /api/v1/reconstruction` returns 501 by design
+- `POST /api/v1/generate` (or compatibility alias `/api/v1/reconstruction`) submits a generation job
+- `GET /api/v1/jobs/{job_id}` and `/result` report job state and asset formats
+- `GET /api/v1/jobs/{job_id}/assets/model.glb` and `model.obj` download completed geometry
 
 See [API_REFERENCE](docs/API_REFERENCE.md) for schemas, examples, and errors. Uploads are limited to 10 MB and 25 million pixels by default. PNG, JPEG and WEBP are decoded and verified by Pillow; suffix and image contents are both checked. Transparent images are composited onto the configurable background.
 
@@ -72,6 +76,6 @@ cd frontend && npm run build
 
 See [TESTING_GUIDE](docs/TESTING_GUIDE.md). Samples can be added under `samples/sketches/`; generated user content should remain in ignored `storage/`.
 
-## Known limits and next phase
+## InstantMesh configuration and current limits
 
-Preprocessing is synchronous and intended for local-sized images. No actual 3D reconstruction is present. The next phase should implement `reconstruction_service` to resolve a selected artifact internally and add a typed response/job model; the existing input and artifact contracts can remain unchanged. Read [INSTANTMESH_INTEGRATION](docs/INSTANTMESH_INTEGRATION.md).
+Preprocessing is synchronous and intended for local-sized images. Install the official TencentARC/InstantMesh checkout and dependencies in a separate Python 3.10 environment, then set `INSTANTMESH_REPO` and `INSTANTMESH_PYTHON` in `backend/.env`. The adapter invokes the upstream `run.py <config> <image> --output_path <job-output> --no_rembg` command, with a single inference worker and a configurable timeout. Install backend dependencies, including Trimesh, from `backend/requirements.txt`. Configure and measure your GPU before presenting local inference as working; generation is not claimed to have been verified on this Windows checkout. See [INSTANTMESH_INTEGRATION](docs/INSTANTMESH_INTEGRATION.md).
